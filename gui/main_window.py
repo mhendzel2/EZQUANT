@@ -605,6 +605,180 @@ class MainWindow(QMainWindow):
                 f"Batch import failed:\n{str(e)}"
             )
     
+    def _import_vsi(self, vsi_filepath: str):
+        """Import Olympus VSI file with scene selection"""
+        try:
+            # Get VSI file info
+            info = TIFFLoader.get_vsi_info(vsi_filepath)
+            
+            scenes = info.get('scenes', [])
+            
+            if len(scenes) == 0:
+                QMessageBox.warning(self, "Import Error", "No scenes found in VSI file.")
+                return
+            elif len(scenes) == 1:
+                # Only one scene, load it directly
+                self._import_vsi_scene(vsi_filepath, 0)
+            else:
+                # Multiple scenes, show selection dialog
+                from PySide6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QDialogButtonBox, QLabel
+                
+                dialog = QDialog(self)
+                dialog.setWindowTitle("Select Scene to Import")
+                dialog.setMinimumWidth(400)
+                dialog.setMinimumHeight(300)
+                
+                layout = QVBoxLayout()
+                
+                label = QLabel(f"VSI file contains {len(scenes)} scenes. Select one to import:")
+                layout.addWidget(label)
+                
+                list_widget = QListWidget()
+                for i, scene in enumerate(scenes):
+                    name = scene.get('name', f'Scene {i+1}')
+                    shape = scene.get('shape', 'unknown')
+                    n_channels = scene.get('n_channels', '?')
+                    n_slices = scene.get('n_slices', '?')
+                    list_widget.addItem(f"{name} - Shape: {shape}, Channels: {n_channels}, Z-slices: {n_slices}")
+                layout.addWidget(list_widget)
+                
+                buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+                buttons.accepted.connect(dialog.accept)
+                buttons.rejected.connect(dialog.reject)
+                layout.addWidget(buttons)
+                
+                dialog.setLayout(layout)
+                
+                if dialog.exec() == QDialog.Accepted and list_widget.currentRow() >= 0:
+                    scene_idx = list_widget.currentRow()
+                    self._import_vsi_scene(vsi_filepath, scene_idx)
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import VSI file:\n{str(e)}")
+    
+    def _import_vsi_scene(self, vsi_filepath: str, scene: int):
+        """Import a specific scene from VSI file"""
+        try:
+            # Load image
+            image, metadata = TIFFLoader.load_vsi(vsi_filepath, scene=scene)
+            
+            # Create unique filename with scene info
+            base_name = Path(vsi_filepath).stem
+            scene_name = metadata.get('current_scene', scene)
+            filename = f"{base_name}_scene{scene}_{scene_name}"
+            
+            # Create image data entry
+            img_data = ImageData(
+                path=vsi_filepath,
+                filename=filename,
+                added_date=str(Path(vsi_filepath).stat().st_mtime),
+                channels=metadata.get('channel_names', []),
+                z_slices=metadata.get('n_slices', 1),
+                is_3d=metadata.get('is_3d', False),
+                bit_depth=metadata.get('bit_depth', 8)
+            )
+            
+            img_data.raw_image = image
+            img_data.metadata = metadata
+            
+            # Add to project
+            img_id = self.project.add_image(img_data)
+            
+            # Display
+            self.display_image(img_id)
+            
+            self.statusBar().showMessage(f"Loaded VSI scene: {filename}", 5000)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to load VSI scene:\n{str(e)}")
+    
+    def _import_lif(self, lif_filepath: str):
+        """Import Leica LIF file with scene selection"""
+        try:
+            # Get LIF file info
+            info = TIFFLoader.get_lif_info(lif_filepath)
+            
+            scenes = info.get('scenes', [])
+            
+            if len(scenes) == 0:
+                QMessageBox.warning(self, "Import Error", "No scenes found in LIF file.")
+                return
+            elif len(scenes) == 1:
+                # Only one scene, load it directly
+                self._import_lif_scene(lif_filepath, 0)
+            else:
+                # Multiple scenes, show selection dialog
+                from PySide6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QDialogButtonBox, QLabel
+                
+                dialog = QDialog(self)
+                dialog.setWindowTitle("Select Scene to Import")
+                dialog.setMinimumWidth(400)
+                dialog.setMinimumHeight(300)
+                
+                layout = QVBoxLayout()
+                
+                label = QLabel(f"LIF file contains {len(scenes)} scenes. Select one to import:")
+                layout.addWidget(label)
+                
+                list_widget = QListWidget()
+                for i, scene in enumerate(scenes):
+                    name = scene.get('name', f'Scene {i+1}')
+                    shape = scene.get('shape', 'unknown')
+                    n_channels = scene.get('n_channels', '?')
+                    n_slices = scene.get('n_slices', '?')
+                    list_widget.addItem(f"{name} - Shape: {shape}, Channels: {n_channels}, Z-slices: {n_slices}")
+                layout.addWidget(list_widget)
+                
+                buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+                buttons.accepted.connect(dialog.accept)
+                buttons.rejected.connect(dialog.reject)
+                layout.addWidget(buttons)
+                
+                dialog.setLayout(layout)
+                
+                if dialog.exec() == QDialog.Accepted and list_widget.currentRow() >= 0:
+                    scene_idx = list_widget.currentRow()
+                    self._import_lif_scene(lif_filepath, scene_idx)
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import LIF file:\n{str(e)}")
+    
+    def _import_lif_scene(self, lif_filepath: str, scene: int):
+        """Import a specific scene from LIF file"""
+        try:
+            # Load image
+            image, metadata = TIFFLoader.load_lif(lif_filepath, scene=scene)
+            
+            # Create unique filename with scene info
+            base_name = Path(lif_filepath).stem
+            scene_name = metadata.get('current_scene', scene)
+            filename = f"{base_name}_scene{scene}_{scene_name}"
+            
+            # Create image data entry
+            img_data = ImageData(
+                path=lif_filepath,
+                filename=filename,
+                added_date=str(Path(lif_filepath).stat().st_mtime),
+                channels=metadata.get('channel_names', []),
+                z_slices=metadata.get('n_slices', 1),
+                is_3d=metadata.get('is_3d', False),
+                bit_depth=metadata.get('bit_depth', 8)
+            )
+            
+            img_data.raw_image = image
+            img_data.metadata = metadata
+            
+            # Add to project
+            img_id = self.project.add_image(img_data)
+            
+            # Display
+            self.display_image(img_id)
+            
+            self.statusBar().showMessage(f"Loaded LIF scene: {filename}", 5000)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to load LIF scene:\n{str(e)}")
+    
     def export_measurements(self):
         """Export measurements to file"""
         QMessageBox.information(
