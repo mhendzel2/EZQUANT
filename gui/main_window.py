@@ -21,6 +21,7 @@ from gui.image_viewer import ImageViewer
 from gui.segmentation_panel import SegmentationPanel
 from gui.analysis_panel import AnalysisPanel
 from gui.visualization_panel import VisualizationPanel
+from gui.settings_dialog import SettingsDialog
 from workers.segmentation_worker import SegmentationWorker, DiameterEstimationWorker
 from workers.measurement_worker import MeasurementWorker
 
@@ -54,7 +55,12 @@ class MainWindow(QMainWindow):
         # Auto-save timer
         self.autosave_timer = QTimer()
         self.autosave_timer.timeout.connect(self._autosave)
-        self.autosave_timer.start(300000)  # 5 minutes
+        
+        # Load settings and configure autosave
+        autosave_enabled = SettingsDialog.get_setting("general/autosave_enabled", True)
+        autosave_interval = SettingsDialog.get_setting("general/autosave_interval", 5)
+        if autosave_enabled:
+            self.autosave_timer.start(autosave_interval * 60000)  # Convert to milliseconds
         
         self.setup_ui()
         self.create_actions()
@@ -451,11 +457,31 @@ class MainWindow(QMainWindow):
     
     def show_settings(self):
         """Show settings dialog"""
-        QMessageBox.information(
-            self,
-            "Settings",
-            "Settings dialog will be implemented soon."
-        )
+        dialog = SettingsDialog(self)
+        if dialog.exec():
+            # Settings were saved, apply any immediate changes
+            self._apply_settings()
+    
+    def _apply_settings(self):
+        """Apply settings that require immediate action"""
+        # Update autosave timer
+        autosave_enabled = SettingsDialog.get_setting("general/autosave_enabled", True)
+        autosave_interval = SettingsDialog.get_setting("general/autosave_interval", 5)
+        
+        if autosave_enabled:
+            self.autosave_timer.start(autosave_interval * 60000)  # Convert to milliseconds
+        else:
+            self.autosave_timer.stop()
+        
+        # Reload plugins if plugin directory changed
+        plugin_dir = SettingsDialog.get_setting("advanced/plugin_directory")
+        if plugin_dir and str(self.plugin_loader.plugin_directory) != plugin_dir:
+            self.plugin_loader.plugin_directory = Path(plugin_dir)
+            self.plugin_loader.reload_plugins()
+            
+            # Update analysis panel with new plugins
+            plugin_info = self.plugin_loader.get_all_plugin_info()
+            self.analysis_panel.set_plugin_info(plugin_info)
     
     def show_help(self):
         """Show documentation"""
@@ -689,7 +715,8 @@ class MainWindow(QMainWindow):
     
     def _autosave(self):
         """Auto-save the current project"""
-        if self.project and self.project.project_path and self.project.auto_save_enabled:
+        autosave_enabled = SettingsDialog.get_setting("general/autosave_enabled", True)
+        if self.project and self.project.project_path and autosave_enabled:
             try:
                 self.project.save()
                 print("Auto-saved project")
