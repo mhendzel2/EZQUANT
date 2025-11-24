@@ -13,15 +13,16 @@ class TIFFLoader:
     """
     Handles loading of single and multiframe TIFF files
     Supports 2D multichannel and 3D multichannel images
+    Also supports Metamorph .nd files that reference multiple TIFF files
     """
     
     @staticmethod
     def load_tiff(filepath: str) -> Tuple[np.ndarray, Dict]:
         """
-        Load a TIFF file and extract metadata
+        Load a TIFF file or Metamorph .nd file and extract metadata
         
         Args:
-            filepath: Path to TIFF file
+            filepath: Path to TIFF or .nd file
             
         Returns:
             tuple: (image_array, metadata_dict)
@@ -32,7 +33,11 @@ class TIFFLoader:
         if not filepath.exists():
             raise FileNotFoundError(f"File not found: {filepath}")
         
-        # Load image
+        # Check if this is a Metamorph .nd file
+        if filepath.suffix.lower() == '.nd':
+            return TIFFLoader.load_metamorph_nd(str(filepath))
+        
+        # Load regular TIFF image
         with tifffile.TiffFile(filepath) as tif:
             image = tif.asarray()
             
@@ -218,6 +223,68 @@ class TIFFLoader:
         metadata['final_shape'] = image.shape
         
         return image, metadata
+    
+    @staticmethod
+    def load_metamorph_nd(nd_filepath: str, stage: int = 0, timepoint: int = 0) -> Tuple[np.ndarray, Dict]:
+        """
+        Load Metamorph .nd file series as a single stack
+        
+        Args:
+            nd_filepath: Path to .nd file
+            stage: Stage position to load (default: 0)
+            timepoint: Timepoint to load (default: 0)
+            
+        Returns:
+            tuple: (image_array, metadata_dict)
+        """
+        from core.metamorph_nd import MetamorphNDFile
+        
+        nd_file = MetamorphNDFile(nd_filepath)
+        image, metadata = nd_file.build_stack(stage=stage, timepoint=timepoint)
+        
+        # Add nd file path to metadata
+        metadata['nd_file'] = nd_filepath
+        metadata['is_metamorph_series'] = True
+        
+        return image, metadata
+    
+    @staticmethod
+    def load_metamorph_nd_all(nd_filepath: str) -> List[Tuple[np.ndarray, Dict]]:
+        """
+        Load all stacks from Metamorph .nd file
+        
+        Args:
+            nd_filepath: Path to .nd file
+            
+        Returns:
+            List of (image_array, metadata_dict) tuples
+        """
+        from core.metamorph_nd import MetamorphNDFile
+        
+        nd_file = MetamorphNDFile(nd_filepath)
+        return nd_file.get_all_stacks()
+    
+    @staticmethod
+    def get_metamorph_info(nd_filepath: str) -> Dict:
+        """
+        Get metadata from Metamorph .nd file without loading images
+        
+        Args:
+            nd_filepath: Path to .nd file
+            
+        Returns:
+            Dictionary with metadata
+        """
+        from core.metamorph_nd import MetamorphNDFile
+        
+        nd_file = MetamorphNDFile(nd_filepath)
+        return {
+            'metadata': nd_file.metadata,
+            'n_files': len(nd_file.file_list),
+            'n_stages': len(nd_file.group_by_stage()),
+            'n_timepoints': len(nd_file.group_by_timepoint()),
+            'file_list': nd_file.file_list
+        }
     
     @staticmethod
     def save_tiff(filepath: str, image: np.ndarray, metadata: Optional[Dict] = None,

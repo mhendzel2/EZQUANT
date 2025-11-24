@@ -374,54 +374,232 @@ class MainWindow(QMainWindow):
                 )
     
     def import_tiff(self):
-        """Import a TIFF image file"""
+        """Import a TIFF image file or Metamorph .nd file"""
         if not self.project:
             self.new_project()
         
         filepath, _ = QFileDialog.getOpenFileName(
             self,
-            "Import TIFF File",
+            "Import TIFF or Metamorph ND File",
             "",
-            "TIFF Files (*.tif *.tiff);;All Files (*)"
+            "Image Files (*.tif *.tiff *.nd);;TIFF Files (*.tif *.tiff);;Metamorph ND Files (*.nd);;All Files (*)"
         )
         
         if filepath:
-            try:
-                # Load image
-                image, metadata = TIFFLoader.load_tiff(filepath)
+            # Check if this is an .nd file
+            if filepath.lower().endswith('.nd'):
+                self._import_metamorph_nd(filepath)
+            else:
+                self._import_single_image(filepath)
+    
+    def _import_single_image(self, filepath: str):
+        """Import a single TIFF image"""
+        try:
+            # Load image
+            image, metadata = TIFFLoader.load_tiff(filepath)
+            
+            # Create image data entry
+            img_data = ImageData(
+                path=filepath,
+                filename=Path(filepath).name,
+                added_date=str(Path(filepath).stat().st_mtime),
+                channels=metadata.get('channel_names', []),
+                shape=metadata.get('final_shape'),
+                dtype=metadata.get('dtype'),
+                pixel_size=metadata.get('pixel_size'),
+                bit_depth=metadata.get('bit_depth', 8)
+            )
+            
+            # Add to project
+            img_index = self.project.add_image(img_data)
+            self.current_image_index = img_index
+            
+            # Display in viewer
+            self.image_viewer.set_image(image, metadata)
+            self.segmentation_panel.set_image(image, metadata)
+            
+            self.image_loaded.emit(img_index)
+            self.statusBar().showMessage(
+                f"Imported: {img_data.filename} "
+                f"({img_data.shape}, {img_data.bit_depth}-bit)", 3000
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error Importing TIFF",
+                f"Could not import TIFF file:\n{str(e)}"
+            )
+    
+    def _import_metamorph_nd(self, nd_filepath: str):
+        """Import Metamorph .nd file series"""
+        try:
+            # Get info about the .nd file
+            nd_info = TIFFLoader.get_metamorph_info(nd_filepath)
+            
+            n_stages = nd_info['n_stages']
+            n_timepoints = nd_info['n_timepoints']
+            
+            # Ask user how to import
+            from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QRadioButton, QButtonGroup
+            
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Import Metamorph Series")
+            layout = QVBoxLayout(dialog)
+            
+            layout.addWidget(QLabel(f"<b>Metamorph Series Detected</b>"))
+            layout.addWidget(QLabel(f"Stages: {n_stages}"))
+            layout.addWidget(QLabel(f"Timepoints: {n_timepoints}"))
+            layout.addWidget(QLabel(f"Total files: {nd_info['n_files']}"))
+            layout.addWidget(QLabel(""))
+            layout.addWidget(QLabel("How would you like to import this series?"))
+            
+            button_group = QButtonGroup(dialog)
+            
+            first_only_radio = QRadioButton("Import first stage/timepoint only")
+            first_only_radio.setChecked(True)
+            button_group.addButton(first_only_radio, 0)
+            layout.addWidget(first_only_radio)
+            
+            all_stages_radio = QRadioButton(f"Import all stages as separate images ({n_stages} images)")
+            button_group.addButton(all_stages_radio, 1)
+            layout.addWidget(all_stages_radio)
+            
+            all_series_radio = QRadioButton(f"Import entire series ({n_stages * n_timepoints} images)")
+            button_group.addButton(all_series_radio, 2)
+            layout.addWidget(all_series_radio)
+            
+            button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            button_box.accepted.connect(dialog.accept)
+            button_box.rejected.connect(dialog.reject)
+            layout.addWidget(button_box)
+            
+            if dialog.exec() == QDialog.Accepted:
+                choice = button_group.checkedId()
                 
-                # Create image data entry
-                img_data = ImageData(
-                    path=filepath,
-                    filename=Path(filepath).name,
-                    added_date=str(Path(filepath).stat().st_mtime),
-                    channels=metadata.get('channel_names', []),
-                    shape=metadata.get('final_shape'),
-                    dtype=metadata.get('dtype'),
-                    pixel_size=metadata.get('pixel_size'),
-                    bit_depth=metadata.get('bit_depth', 8)
-                )
+                if choice == 0:
+                    # Import first only
+                    image, metadata = TIFFLoader.load_metamorph_nd(nd_filepath, stage=0, timepoint=0)
+                    
+                    img_data = ImageData(
+                        path=nd_filepath,
+                        filename=Path(nd_filepath).name,
+                        added_date=str(Path(nd_filepath).stat().st_mtime),
+                        channels=metadata.get('channel_names', []),
+                        shape=metadata.get('final_shape'),
+                        dtype=metadata.get('dtype'),
+                        pixel_size=metadata.get('pixel_size'),
+                        bit_depth=metadata.get('bit_depth', 8)
+                    )
+                    
+                    img_index = self.project.add_image(img_data)
+                    self.current_image_index = img_index
+                    
+                    self.image_viewer.set_image(image, metadata)
+                    self.segmentation_panel.set_image(image, metadata)
+                    self.image_loaded.emit(img_index)
+                    
+                    self.statusBar().showMessage(f"Imported: {img_data.filename} (first position)", 3000)
                 
-                # Add to project
-                img_index = self.project.add_image(img_data)
-                self.current_image_index = img_index
+                elif choice in [1, 2]:
+                    # Import multiple
+                    self._import_metamorph_batch(nd_filepath, import_all=(choice == 2))
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error Importing Metamorph Series",
+                f"Could not import .nd file:\n{str(e)}"
+            )
+    
+    def _import_metamorph_batch(self, nd_filepath: str, import_all: bool = False):
+        """Import multiple images from Metamorph series"""
+        from core.metamorph_nd import MetamorphNDFile
+        
+        try:
+            nd_file = MetamorphNDFile(nd_filepath)
+            
+            stages = sorted(set([f['stage'] for f in nd_file.file_list]))
+            timepoints = sorted(set([f['timepoint'] for f in nd_file.file_list]))
+            
+            # Progress dialog
+            from PySide6.QtWidgets import QProgressDialog
+            
+            if import_all:
+                total = len(stages) * len(timepoints)
+                progress_text = "Importing all stage positions and timepoints..."
+            else:
+                total = len(stages)
+                progress_text = "Importing all stage positions..."
+                timepoints = [0]  # Only first timepoint
+            
+            progress = QProgressDialog(progress_text, "Cancel", 0, total, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            
+            count = 0
+            first_index = None
+            
+            for stage in stages:
+                for timepoint in timepoints:
+                    if progress.wasCanceled():
+                        break
+                    
+                    try:
+                        image, metadata = nd_file.build_stack(stage=stage, timepoint=timepoint)
+                        
+                        # Create descriptive filename
+                        stage_name = metadata.get('stage_name', f'Stage_{stage}')
+                        if import_all and len(timepoints) > 1:
+                            filename = f"{Path(nd_filepath).stem}_{stage_name}_t{timepoint:03d}"
+                        else:
+                            filename = f"{Path(nd_filepath).stem}_{stage_name}"
+                        
+                        img_data = ImageData(
+                            path=nd_filepath,
+                            filename=filename,
+                            added_date=str(Path(nd_filepath).stat().st_mtime),
+                            channels=metadata.get('channel_names', []),
+                            shape=metadata.get('final_shape'),
+                            dtype=metadata.get('dtype'),
+                            pixel_size=metadata.get('pixel_size'),
+                            bit_depth=metadata.get('bit_depth', 8)
+                        )
+                        
+                        img_index = self.project.add_image(img_data)
+                        
+                        if first_index is None:
+                            first_index = img_index
+                        
+                        count += 1
+                        progress.setValue(count)
+                        
+                    except Exception as e:
+                        print(f"Warning: Could not import stage {stage}, timepoint {timepoint}: {e}")
                 
-                # Display in viewer
+                if progress.wasCanceled():
+                    break
+            
+            progress.close()
+            
+            # Load first image
+            if first_index is not None:
+                self.current_image_index = first_index
+                img_data = self.project.get_image(first_index)
+                
+                image, metadata = TIFFLoader.load_metamorph_nd(nd_filepath, stage=0, timepoint=0)
                 self.image_viewer.set_image(image, metadata)
                 self.segmentation_panel.set_image(image, metadata)
-                
-                self.image_loaded.emit(img_index)
-                self.statusBar().showMessage(
-                    f"Imported: {img_data.filename} "
-                    f"({img_data.shape}, {img_data.bit_depth}-bit)", 3000
-                )
-                
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Error Importing TIFF",
-                    f"Could not import TIFF file:\n{str(e)}"
-                )
+                self.image_loaded.emit(first_index)
+            
+            self.statusBar().showMessage(f"Imported {count} images from Metamorph series", 5000)
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Batch import failed:\n{str(e)}"
+            )
     
     def export_measurements(self):
         """Export measurements to file"""
