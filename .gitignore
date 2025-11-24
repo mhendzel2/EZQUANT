@@ -1,0 +1,42 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project specific
+*.pyc
+*.pyo
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+*.spec
+*.exe
+*.msi
+installer/
