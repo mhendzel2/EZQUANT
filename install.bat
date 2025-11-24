@@ -1,0 +1,225 @@
+@echo off
+REM ============================================================================
+REM Nuclei Segmentation App - Installation Script
+REM ============================================================================
+REM This script creates a Python virtual environment and installs all
+REM dependencies required to run the application from source.
+REM
+REM Requirements:
+REM   - Python 3.9, 3.10, or 3.11 (64-bit)
+REM   - pip (included with Python)
+REM   - ~5 GB free disk space
+REM
+REM Usage:
+REM   Double-click install.bat or run from command prompt
+REM ============================================================================
+
+setlocal enabledelayedexpansion
+
+echo.
+echo ========================================================================
+echo  Nuclei Segmentation App - Installation
+echo ========================================================================
+echo.
+
+REM Set preferred Python version (change this if needed)
+set PREFERRED_PYTHON=py -3.10
+
+REM Check if Python launcher is available and preferred version exists
+echo [1/6] Checking Python installation...
+%PREFERRED_PYTHON% --version >nul 2>&1
+if errorlevel 1 (
+    echo Python 3.10 not found via Python Launcher, checking for other versions...
+    
+    REM Try standard python command
+    python --version >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo ERROR: Python is not installed or not in PATH
+        echo.
+        echo Please install Python 3.10 from:
+        echo   https://www.python.org/downloads/
+        echo.
+        echo Make sure to check "Add Python to PATH" during installation!
+        echo.
+        pause
+        exit /b 1
+    )
+    set PYTHON_CMD=python
+) else (
+    echo Found Python 3.10 via Python Launcher
+    set PYTHON_CMD=%PREFERRED_PYTHON%
+)
+
+REM Get Python version
+for /f "tokens=2" %%i in ('%PYTHON_CMD% --version 2^>^&1') do set PYTHON_VERSION=%%i
+echo Using Python version: %PYTHON_VERSION%
+
+REM Extract major and minor version
+for /f "tokens=1,2 delims=." %%a in ("%PYTHON_VERSION%") do (
+    set PYTHON_MAJOR=%%a
+    set PYTHON_MINOR=%%b
+)
+
+REM Check Python version (must be 3.9, 3.10, or 3.11)
+if not "%PYTHON_MAJOR%"=="3" (
+    echo.
+    echo ERROR: Python 3.x is required, found Python %PYTHON_VERSION%
+    echo Please install Python 3.9, 3.10, or 3.11
+    echo.
+    pause
+    exit /b 1
+)
+
+if %PYTHON_MINOR% LSS 9 (
+    echo.
+    echo WARNING: Python 3.9+ is recommended, found Python %PYTHON_VERSION%
+    echo Some features may not work correctly.
+    echo.
+    choice /M "Continue anyway"
+    if errorlevel 2 exit /b 1
+)
+
+if %PYTHON_MINOR% GTR 11 (
+    echo.
+    echo WARNING: Python 3.9-3.11 is recommended, found Python %PYTHON_VERSION%
+    echo Compatibility with Python 3.12+ is not guaranteed.
+    echo.
+    choice /M "Continue anyway"
+    if errorlevel 2 exit /b 1
+)
+
+echo Python version OK: %PYTHON_VERSION%
+echo.
+
+REM Check if venv already exists
+if exist "venv" (
+    echo.
+    echo WARNING: Virtual environment 'venv' already exists!
+    echo.
+    choice /M "Delete and recreate"
+    if errorlevel 2 (
+        echo Installation cancelled.
+        pause
+        exit /b 0
+    )
+    echo Removing old virtual environment...
+    rmdir /s /q venv
+)
+
+REM Create virtual environment with specific Python version
+echo [2/6] Creating virtual environment with Python %PYTHON_VERSION%...
+echo Using Python: 
+%PYTHON_CMD% -c "import sys; print(f'  Executable: {sys.executable}'); print(f'  Version: {sys.version}')"
+echo.
+%PYTHON_CMD% -m venv venv
+if errorlevel 1 (
+    echo.
+    echo ERROR: Failed to create virtual environment
+    echo Make sure you have venv module installed:
+    echo   python -m pip install --user virtualenv
+    echo.
+    pause
+    exit /b 1
+)
+echo Virtual environment created: venv\
+echo Python %PYTHON_VERSION% will be used in this environment.
+echo.
+
+REM Activate virtual environment
+echo [3/6] Activating virtual environment...
+call venv\Scripts\activate.bat
+if errorlevel 1 (
+    echo.
+    echo ERROR: Failed to activate virtual environment
+    echo.
+    pause
+    exit /b 1
+)
+echo Virtual environment activated.
+echo.
+
+REM Upgrade pip
+echo [4/6] Upgrading pip, setuptools, and wheel...
+venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+if errorlevel 1 (
+    echo.
+    echo WARNING: Failed to upgrade pip
+    echo Continuing with existing version...
+    echo.
+)
+echo.
+
+REM Install PyTorch with CUDA support (if available)
+echo [5/6] Installing PyTorch...
+echo.
+echo Checking for NVIDIA GPU...
+nvidia-smi >nul 2>&1
+if errorlevel 1 (
+    echo No NVIDIA GPU detected - installing CPU-only version
+    echo Note: Segmentation will be slower without GPU
+    echo.
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+) else (
+    echo NVIDIA GPU detected - installing CUDA-enabled version
+    echo This may take several minutes...
+    echo.
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+)
+
+if errorlevel 1 (
+    echo.
+    echo ERROR: Failed to install PyTorch
+    echo Please check your internet connection and try again.
+    echo.
+    pause
+    exit /b 1
+)
+echo PyTorch installed successfully.
+echo.
+
+REM Install application dependencies
+echo [6/6] Installing application dependencies...
+echo This may take 10-15 minutes depending on your connection...
+echo.
+
+if not exist "requirements_updated.txt" (
+    echo ERROR: requirements_updated.txt not found!
+    echo Please make sure you're running this script from the application directory.
+    echo.
+    pause
+    exit /b 1
+)
+
+pip install -r requirements_updated.txt
+if errorlevel 1 (
+    echo.
+    echo ERROR: Failed to install dependencies
+    echo Please check the error messages above.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo.
+echo ========================================================================
+echo  Installation Complete!
+echo ========================================================================
+echo.
+echo Virtual environment: venv\
+echo Python version: %PYTHON_VERSION%
+echo.
+echo Next steps:
+echo   1. Run 'start.bat' to launch the application
+echo   2. Or manually: venv\Scripts\activate.bat, then python main.py
+echo.
+echo Optional - Download Cellpose models (recommended):
+echo   venv\Scripts\activate.bat
+echo   python -c "from cellpose import models; models.Cellpose(gpu=False, model_type='nuclei')"
+echo.
+echo For GPU acceleration, ensure NVIDIA CUDA Toolkit 11.8 is installed:
+echo   https://developer.nvidia.com/cuda-11-8-0-download-archive
+echo.
+echo ========================================================================
+echo.
+pause
