@@ -380,15 +380,19 @@ class MainWindow(QMainWindow):
         
         filepath, _ = QFileDialog.getOpenFileName(
             self,
-            "Import TIFF or Metamorph ND File",
+            "Import Microscopy Image File",
             "",
-            "Image Files (*.tif *.tiff *.nd);;TIFF Files (*.tif *.tiff);;Metamorph ND Files (*.nd);;All Files (*)"
+            "Image Files (*.tif *.tiff *.nd *.vsi *.lif);;TIFF Files (*.tif *.tiff);;Metamorph ND Files (*.nd);;Olympus VSI Files (*.vsi);;Leica LIF Files (*.lif);;All Files (*)"
         )
         
         if filepath:
-            # Check if this is an .nd file
+            # Check file type and route to appropriate handler
             if filepath.lower().endswith('.nd'):
                 self._import_metamorph_nd(filepath)
+            elif filepath.lower().endswith('.vsi'):
+                self._import_vsi(filepath)
+            elif filepath.lower().endswith('.lif'):
+                self._import_lif(filepath)
             else:
                 self._import_single_image(filepath)
     
