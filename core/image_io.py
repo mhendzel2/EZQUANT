@@ -37,6 +37,14 @@ class TIFFLoader:
         if filepath.suffix.lower() == '.nd':
             return TIFFLoader.load_metamorph_nd(str(filepath))
         
+        # Check if this is a VSI (Olympus) file
+        if filepath.suffix.lower() == '.vsi':
+            return TIFFLoader.load_vsi(str(filepath))
+        
+        # Check if this is a LIF (Leica) file
+        if filepath.suffix.lower() == '.lif':
+            return TIFFLoader.load_lif(str(filepath))
+        
         # Load regular TIFF image
         with tifffile.TiffFile(filepath) as tif:
             image = tif.asarray()
@@ -285,6 +293,82 @@ class TIFFLoader:
             'n_timepoints': len(nd_file.group_by_timepoint()),
             'file_list': nd_file.file_list
         }
+    
+    @staticmethod
+    def load_vsi(vsi_filepath: str, scene: int = 0, timepoint: int = 0) -> Tuple[np.ndarray, Dict]:
+        """
+        Load Olympus VSI file
+        
+        Args:
+            vsi_filepath: Path to .vsi file
+            scene: Scene/series index to load (default: 0)
+            timepoint: Timepoint to load (default: 0)
+            
+        Returns:
+            tuple: (image_array, metadata_dict)
+        """
+        from core.bioformats_io import BioformatsLoader
+        
+        image, metadata = BioformatsLoader.load_vsi(vsi_filepath, scene=scene, timepoint=timepoint)
+        
+        # Add file path to metadata
+        metadata['vsi_file'] = vsi_filepath
+        metadata['is_vsi_series'] = True
+        
+        return image, metadata
+    
+    @staticmethod
+    def load_lif(lif_filepath: str, scene: int = 0, timepoint: int = 0) -> Tuple[np.ndarray, Dict]:
+        """
+        Load Leica LIF file
+        
+        Args:
+            lif_filepath: Path to .lif file
+            scene: Scene/series index to load (default: 0)
+            timepoint: Timepoint to load (default: 0)
+            
+        Returns:
+            tuple: (image_array, metadata_dict)
+        """
+        from core.bioformats_io import BioformatsLoader
+        
+        image, metadata = BioformatsLoader.load_lif(lif_filepath, scene=scene, timepoint=timepoint)
+        
+        # Add file path to metadata
+        metadata['lif_file'] = lif_filepath
+        metadata['is_lif_series'] = True
+        
+        return image, metadata
+    
+    @staticmethod
+    def get_vsi_info(vsi_filepath: str) -> Dict:
+        """
+        Get metadata from VSI file without loading images
+        
+        Args:
+            vsi_filepath: Path to .vsi file
+            
+        Returns:
+            Dictionary with metadata including available scenes
+        """
+        from core.bioformats_io import BioformatsLoader
+        
+        return BioformatsLoader.get_vsi_info(vsi_filepath)
+    
+    @staticmethod
+    def get_lif_info(lif_filepath: str) -> Dict:
+        """
+        Get metadata from LIF file without loading images
+        
+        Args:
+            lif_filepath: Path to .lif file
+            
+        Returns:
+            Dictionary with metadata including available scenes
+        """
+        from core.bioformats_io import BioformatsLoader
+        
+        return BioformatsLoader.get_lif_info(lif_filepath)
     
     @staticmethod
     def save_tiff(filepath: str, image: np.ndarray, metadata: Optional[Dict] = None,
