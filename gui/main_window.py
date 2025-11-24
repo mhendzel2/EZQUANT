@@ -11,13 +11,18 @@ from PySide6.QtGui import QAction, QKeySequence
 from pathlib import Path
 from typing import Optional, Dict
 import numpy as np
+import pandas as pd
 import datetime
 
 from core.project_data import Project, ImageData
 from core.image_io import TIFFLoader
+from core.plugin_loader import PluginLoader
 from gui.image_viewer import ImageViewer
 from gui.segmentation_panel import SegmentationPanel
+from gui.analysis_panel import AnalysisPanel
+from gui.visualization_panel import VisualizationPanel
 from workers.segmentation_worker import SegmentationWorker, DiameterEstimationWorker
+from workers.measurement_worker import MeasurementWorker
 
 
 class MainWindow(QMainWindow):
@@ -36,6 +41,15 @@ class MainWindow(QMainWindow):
         # Project management
         self.project: Optional[Project] = None
         self.current_image_index: Optional[int] = None
+        
+        # Plugin loader
+        self.plugin_loader = PluginLoader()
+        self.plugin_loader.load_all_plugins()
+        
+        # Current measurements
+        self.current_measurements: Optional[pd.DataFrame] = None
+        self.current_masks: Optional[np.ndarray] = None
+        self.current_intensity_images: Optional[Dict[str, np.ndarray]] = None
         
         # Auto-save timer
         self.autosave_timer = QTimer()
@@ -63,14 +77,29 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Create main splitter
-        splitter = QSplitter(Qt.Horizontal)
+        # Create tabs
+        self.segmentation_tab = self._create_segmentation_tab()
+        self.tab_widget.addTab(self.segmentation_tab, "Segmentation")
         
-        # Left side: Project panel (will be implemented as dock widget)
-        # Right side: Main tab widget
-        self.tab_widget = QTabWidget()
-        splitter.addWidget(self.tab_widget)
+        self.analysis_tab = self._create_analysis_tab()
+        self.tab_widget.addTab(self.analysis_tab, "Analysis")
         
-        layout.addWidget(splitter)
+        self.visualization_tab = self._create_visualization_tab()
+        self.tab_widget.addTab(self.visualization_tab, "Visualization")
+        
+        # Workers
+        self.segmentation_worker: Optional[SegmentationWorker] = None
+        self.diameter_worker: Optional[DiameterEstimationWorker] = None
+        self.measurement_worker: Optional[MeasurementWorker] = None
+            QLabel("Analysis tab - Coming soon")
+        )
+        self.visualization_tab.layout().addWidget(
+            QLabel("Visualization tab - Coming soon")
+        )
+        
+        # Workers
+        self.segmentation_worker: Optional[SegmentationWorker] = None
+        self.diameter_worker: Optional[DiameterEstimationWorker] = None
     
     def _create_segmentation_tab(self) -> QWidget:
         """Create the segmentation tab with image viewer and controls"""
@@ -94,36 +123,32 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.segmentation_panel, stretch=1)
         
         return tab
+        layout.addWidget(self.segmentation_panel, stretch=1)
         
-        # Create segmentation tab
-        self.segmentation_tab = self._create_segmentation_tab()
-        self.tab_widget.addTab(self.segmentation_tab, "Segmentation")
-        
-        # Create placeholder tabs
-        self.analysis_tab = QWidget()
-        self.visualization_tab = QWidget()
-        
-        self.tab_widget.addTab(self.analysis_tab, "Analysis")
-        self.tab_widget.addTab(self.visualization_tab, "Visualization")
-        
-        # Set tab layouts
-        self.analysis_tab.setLayout(QVBoxLayout())
-        self.visualization_tab.setLayout(QVBoxLayout())
-        
-        # Add placeholder labels
-        self.analysis_tab.layout().addWidget(
-            QLabel("Analysis tab - Coming soon")
-        )
-        self.visualization_tab.layout().addWidget(
-            QLabel("Visualization tab - Coming soon")
-        )
-        
-        # Workers
-        self.segmentation_worker: Optional[SegmentationWorker] = None
-        self.diameter_worker: Optional[DiameterEstimationWorker] = None
+        return tab
     
-    def create_actions(self):
-        """Create menu and toolbar actions"""
+    def _create_analysis_tab(self) -> QWidget:
+        """Create the analysis tab for measurements"""
+        self.analysis_panel = AnalysisPanel()
+        
+        # Set plugin info
+        plugin_info = self.plugin_loader.get_all_plugin_info()
+        self.analysis_panel.set_plugin_info(plugin_info)
+        
+        # Connect signals
+        self.analysis_panel.run_measurements.connect(self._on_run_measurements)
+        self.analysis_panel.manage_plugins_btn.clicked.connect(self.show_plugin_manager)
+        
+        return self.analysis_panel
+    
+    def _create_visualization_tab(self) -> QWidget:
+        """Create the visualization tab for plots"""
+        self.visualization_panel = VisualizationPanel()
+        
+        # Connect signals
+        self.visualization_panel.nucleus_selected.connect(self._on_nucleus_selected)
+        
+        return self.visualization_panelmenu and toolbar actions"""
         # File actions
         self.new_action = QAction("&New Project", self)
         self.new_action.setShortcut(QKeySequence.New)
@@ -488,18 +513,6 @@ class MainWindow(QMainWindow):
             parameters=parameters,
             gpu_available=self.gpu_available
         )
-        
-        # Connect signals
-        self.segmentation_worker.finished.connect(self._on_segmentation_finished)
-        self.segmentation_worker.error.connect(self._on_segmentation_error)
-        self.segmentation_worker.status.connect(self.statusBar().showMessage)
-        
-        # Update UI
-        self.segmentation_panel.set_running(True)
-        
-        # Start
-        self.segmentation_worker.start()
-    
     def _on_segmentation_finished(self, masks: np.ndarray, results: Dict):
         """Handle segmentation completion"""
         # Update UI
@@ -513,10 +526,25 @@ class MainWindow(QMainWindow):
         # Display mask overlay
         self.image_viewer.set_mask(masks)
         
+        # Store masks for analysis
+        self.current_masks = masks
+        
         # Store in project
         if self.current_image_index is not None:
             img_data = self.project.get_image(self.current_image_index)
             if img_data:
+                # Add to segmentation history
+                import datetime
+                seg_record = {
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    'parameters': params,
+                    'results': results
+                }
+                img_data.segmentation_history.append(seg_record)
+                
+                # TODO: Store mask data (need to handle large arrays)
+        
+        self.statusBar().showMessage("Segmentation complete - Ready for analysis", 5000)
                 # Add to segmentation history
                 import datetime
                 seg_record = {
@@ -566,6 +594,107 @@ class MainWindow(QMainWindow):
     def _on_nucleus_selected(self, nucleus_id: int):
         """Handle nucleus selection in image viewer"""
         self.statusBar().showMessage(f"Selected nucleus ID: {nucleus_id}", 3000)
+    
+    def _on_run_measurements(self, config: Dict):
+        """Handle run measurements request"""
+        if self.current_masks is None:
+            QMessageBox.warning(
+                self,
+                "No Segmentation",
+                "Please run segmentation first before extracting measurements."
+            )
+            return
+        
+        if self.current_image_index is None:
+            return
+        
+        # Get current image data
+        img_data = self.project.get_image(self.current_image_index)
+        if img_data is None:
+            return
+        
+        # Load image to get intensity data
+        try:
+            image, metadata = TIFFLoader.load_tiff(img_data.path)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not load image: {e}")
+            return
+        
+        # Prepare intensity images dict
+        self.current_intensity_images = {}
+        
+        # Get channel names from metadata
+        channel_names = metadata.get('channel_names', [])
+        
+        # Handle 3D vs 2D
+        is_3d = image.ndim == 4
+        
+        if is_3d:
+            # For 3D, we'll use max projection for now or full 3D depending on config
+            if config.get('is_3d', False):
+                # Use full 3D data
+                for i, ch_name in enumerate(channel_names):
+                    self.current_intensity_images[ch_name] = image[:, i, :, :]
+            else:
+                # Use max projection for 2D analysis
+                for i, ch_name in enumerate(channel_names):
+                    self.current_intensity_images[ch_name] = np.max(image[:, i, :, :], axis=0)
+        else:
+            # 2D image
+            for i, ch_name in enumerate(channel_names):
+                self.current_intensity_images[ch_name] = image[i, :, :]
+        
+        # Get DNA channel from image viewer
+        dna_channel_index = self.image_viewer.get_dna_channel_index()
+        if dna_channel_index is not None and dna_channel_index < len(channel_names):
+            config['dna_channel'] = channel_names[dna_channel_index]
+        
+        # Create and start measurement worker
+        self.measurement_worker = MeasurementWorker(
+            masks=self.current_masks,
+            intensity_images=self.current_intensity_images,
+            config=config,
+            plugin_loader=self.plugin_loader
+        )
+        
+        # Connect signals
+        self.measurement_worker.finished.connect(self._on_measurements_finished)
+        self.measurement_worker.error.connect(self._on_measurements_error)
+        self.measurement_worker.progress.connect(self.analysis_panel.set_progress)
+        self.measurement_worker.status.connect(self.statusBar().showMessage)
+        
+        # Start worker
+        self.measurement_worker.start()
+        self.statusBar().showMessage("Running measurements...", 0)
+    
+    def _on_measurements_finished(self, measurements_df: pd.DataFrame):
+        """Handle measurements completion"""
+        self.current_measurements = measurements_df
+        
+        # Update analysis panel
+        self.analysis_panel.set_measurements(measurements_df)
+        
+        # Update visualization panel
+        self.visualization_panel.set_measurements(measurements_df)
+        
+        # Store in project
+        if self.current_image_index is not None:
+            img_data = self.project.get_image(self.current_image_index)
+            if img_data:
+                # Store measurements (simplified - in full version might serialize to file)
+                img_data.measurements = measurements_df.to_dict()
+        
+        self.statusBar().showMessage(
+            f"Measurements complete: {len(measurements_df)} nuclei analyzed", 5000
+        )
+        
+        # Automatically switch to visualization tab
+        self.tab_widget.setCurrentWidget(self.visualization_tab)
+    
+    def _on_measurements_error(self, error_message: str):
+        """Handle measurement error"""
+        QMessageBox.critical(self, "Measurement Error", error_message)
+        self.statusBar().showMessage("Measurement failed", 5000)
     
     def _autosave(self):
         """Auto-save the current project"""
