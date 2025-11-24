@@ -77,6 +77,15 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Create main splitter
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # Left side: Project panel (will be implemented as dock widget)
+        # Right side: Main tab widget
+        self.tab_widget = QTabWidget()
+        splitter.addWidget(self.tab_widget)
+        
+        layout.addWidget(splitter)
+        
         # Create tabs
         self.segmentation_tab = self._create_segmentation_tab()
         self.tab_widget.addTab(self.segmentation_tab, "Segmentation")
@@ -91,15 +100,6 @@ class MainWindow(QMainWindow):
         self.segmentation_worker: Optional[SegmentationWorker] = None
         self.diameter_worker: Optional[DiameterEstimationWorker] = None
         self.measurement_worker: Optional[MeasurementWorker] = None
-            QLabel("Analysis tab - Coming soon")
-        )
-        self.visualization_tab.layout().addWidget(
-            QLabel("Visualization tab - Coming soon")
-        )
-        
-        # Workers
-        self.segmentation_worker: Optional[SegmentationWorker] = None
-        self.diameter_worker: Optional[DiameterEstimationWorker] = None
     
     def _create_segmentation_tab(self) -> QWidget:
         """Create the segmentation tab with image viewer and controls"""
@@ -148,7 +148,10 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.visualization_panel.nucleus_selected.connect(self._on_nucleus_selected)
         
-        return self.visualization_panelmenu and toolbar actions"""
+        return self.visualization_panel
+    
+    def create_actions(self):
+        """Create menu and toolbar actions"""
         # File actions
         self.new_action = QAction("&New Project", self)
         self.new_action.setShortcut(QKeySequence.New)
@@ -545,18 +548,6 @@ class MainWindow(QMainWindow):
                 # TODO: Store mask data (need to handle large arrays)
         
         self.statusBar().showMessage("Segmentation complete - Ready for analysis", 5000)
-                # Add to segmentation history
-                import datetime
-                seg_record = {
-                    'timestamp': datetime.datetime.now().isoformat(),
-                    'parameters': params,
-                    'results': results
-                }
-                img_data.segmentation_history.append(seg_record)
-                
-                # TODO: Store mask data (need to handle large arrays)
-        
-        self.statusBar().showMessage("Segmentation complete", 5000)
     
     def _on_segmentation_error(self, error_message: str):
         """Handle segmentation error"""

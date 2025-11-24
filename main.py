@@ -59,12 +59,10 @@ def show_gpu_dialog(gpu_available, gpu_info):
 
 def main():
     """Main application entry point"""
-    # Set high DPI scaling
+    # Set high DPI scaling (only the policy, other attributes are deprecated in Qt6)
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
     
     app = QApplication(sys.argv)
     app.setApplicationName("Nuclei Segmentation & Analysis")
