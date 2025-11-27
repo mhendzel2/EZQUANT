@@ -159,3 +159,170 @@ class DiameterEstimationWorker(QThread):
             
         except Exception as e:
             self.error.emit(f"Diameter estimation error: {str(e)}")
+
+
+class BatchSegmentationWorker(QThread):
+    """
+    Background worker for batch segmentation of multiple images
+    """
+    
+    # Signals
+    progress = Signal(int, int)  # current, total
+    image_finished = Signal(int, np.ndarray, dict)  # index, masks, results
+    all_finished = Signal(dict)  # summary statistics
+    error = Signal(int, str)  # image index, error message
+    status = Signal(str)
+    
+    def __init__(self,
+                 images_data: list,  # List of (index, filepath, ImageData) tuples
+                 parameters: Dict,
+                 gpu_available: bool = False):
+        super().__init__()
+        
+        self.images_data = images_data
+        self.parameters = parameters
+        self.gpu_available = gpu_available
+        self._is_cancelled = False
+    
+    def run(self):
+        """Run batch segmentation"""
+        total = len(self.images_data)
+        successful = 0
+        failed = 0
+        total_nuclei = 0
+        
+        try:
+            # Create segmentation engine once
+            self.status.emit("Initializing segmentation engine...")
+            engine = SegmentationEngine(gpu_available=self.gpu_available)
+            
+            engine_type = self.parameters.get('engine', 'cellpose')
+            
+            for i, (img_index, filepath, img_data) in enumerate(self.images_data):
+                if self._is_cancelled:
+                    self.status.emit("Batch segmentation cancelled")
+                    break
+                
+                self.progress.emit(i + 1, total)
+                self.status.emit(f"Processing {img_data.filename} ({i+1}/{total})...")
+                
+                try:
+                    # Load image
+                    from core.image_io import TIFFLoader
+                    
+                    if filepath.lower().endswith('.nd'):
+                        image, metadata = TIFFLoader.load_metamorph_nd(filepath, stage=0, timepoint=0)
+                    elif filepath.lower().endswith('.vsi'):
+                        image, metadata = TIFFLoader.load_vsi(filepath, scene=0)
+                    elif filepath.lower().endswith('.lif'):
+                        image, metadata = TIFFLoader.load_lif(filepath, scene=0)
+                    else:
+                        image, metadata = TIFFLoader.load_tiff(filepath)
+                    
+                    # Run segmentation
+                    if engine_type == 'cellpose':
+                        masks, info = self._segment_cellpose(engine, image)
+                    elif engine_type == 'sam':
+                        masks, info = self._segment_sam(engine, image)
+                    else:
+                        raise ValueError(f"Unknown engine: {engine_type}")
+                    
+                    # Emit success
+                    nucleus_count = info.get('nucleus_count', 0)
+                    total_nuclei += nucleus_count
+                    successful += 1
+                    
+                    self.image_finished.emit(img_index, masks, info)
+                    
+                except Exception as e:
+                    failed += 1
+                    error_msg = f"Failed to segment {img_data.filename}: {str(e)}"
+                    self.error.emit(img_index, error_msg)
+            
+            # Send summary
+            summary = {
+                'total': total,
+                'successful': successful,
+                'failed': failed,
+                'total_nuclei': total_nuclei,
+                'cancelled': self._is_cancelled
+            }
+            
+            self.all_finished.emit(summary)
+            
+        except Exception as e:
+            self.status.emit(f"Batch segmentation error: {str(e)}")
+    
+    def _segment_cellpose(self, engine, image) -> Tuple[np.ndarray, Dict]:
+        """Segment with Cellpose"""
+        import time
+        start = time.time()
+        
+        # Extract parameters
+        model_name = self.parameters.get('model_name', 'nuclei')
+        diameter = self.parameters.get('diameter')
+        flow_threshold = self.parameters.get('flow_threshold', 0.4)
+        cellprob_threshold = self.parameters.get('cellprob_threshold', 0.0)
+        do_3d = self.parameters.get('do_3d', False)
+        channels = self.parameters.get('channels', [0, 0])
+        
+        # Run segmentation
+        masks = engine.segment_cellpose(
+            image=image,
+            model_name=model_name,
+            diameter=diameter,
+            flow_threshold=flow_threshold,
+            cellprob_threshold=cellprob_threshold,
+            do_3d=do_3d,
+            channels=channels
+        )
+        
+        # Calculate statistics
+        nucleus_count = np.max(masks)
+        areas = []
+        for nucleus_id in range(1, nucleus_count + 1):
+            area = np.sum(masks == nucleus_id)
+            areas.append(area)
+        
+        median_area = np.median(areas) if areas else 0
+        cv_area = (np.std(areas) / np.mean(areas) * 100) if areas and np.mean(areas) > 0 else 0
+        
+        info = {
+            'model_name': model_name,
+            'nucleus_count': int(nucleus_count),
+            'median_area': float(median_area),
+            'cv_area': float(cv_area),
+            'processing_time': time.time() - start,
+            'diameter': diameter
+        }
+        
+        return masks, info
+    
+    def _segment_sam(self, engine, image) -> Tuple[np.ndarray, Dict]:
+        """Segment with SAM"""
+        import time
+        start = time.time()
+        
+        model_type = self.parameters.get('model_type', 'vit_h')
+        automatic = self.parameters.get('automatic', True)
+        
+        masks = engine.segment_sam(
+            image=image,
+            model_type=model_type,
+            automatic=automatic
+        )
+        
+        nucleus_count = np.max(masks)
+        
+        info = {
+            'model_name': f'SAM ({model_type})',
+            'nucleus_count': int(nucleus_count),
+            'processing_time': time.time() - start
+        }
+        
+        return masks, info
+    
+    def cancel(self):
+        """Cancel batch segmentation"""
+        self._is_cancelled = True
+

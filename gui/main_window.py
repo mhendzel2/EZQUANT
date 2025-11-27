@@ -22,7 +22,8 @@ from gui.segmentation_panel import SegmentationPanel
 from gui.analysis_panel import AnalysisPanel
 from gui.visualization_panel import VisualizationPanel
 from gui.settings_dialog import SettingsDialog
-from workers.segmentation_worker import SegmentationWorker, DiameterEstimationWorker
+from gui.project_panel import ProjectPanel
+from workers.segmentation_worker import SegmentationWorker, DiameterEstimationWorker, BatchSegmentationWorker
 from workers.measurement_worker import MeasurementWorker
 
 
@@ -85,10 +86,23 @@ class MainWindow(QMainWindow):
         # Create main splitter
         splitter = QSplitter(Qt.Horizontal)
         
-        # Left side: Project panel (will be implemented as dock widget)
+        # Left side: Project panel
+        self.project_panel = ProjectPanel()
+        self.project_panel.setMinimumWidth(200)
+        self.project_panel.setMaximumWidth(400)
+        splitter.addWidget(self.project_panel)
+        
+        # Connect project panel signals
+        self.project_panel.add_images_requested.connect(self.import_tiff)
+        self.project_panel.image_selected.connect(self._on_project_image_selected)
+        self.project_panel.remove_image_requested.connect(self._on_remove_image)
+        
         # Right side: Main tab widget
         self.tab_widget = QTabWidget()
         splitter.addWidget(self.tab_widget)
+        
+        # Set initial splitter sizes
+        splitter.setSizes([250, 1150])
         
         layout.addWidget(splitter)
         
@@ -123,6 +137,7 @@ class MainWindow(QMainWindow):
         
         # Connect signals
         self.segmentation_panel.run_segmentation.connect(self._on_run_segmentation)
+        self.segmentation_panel.run_batch_segmentation.connect(self._on_run_batch_segmentation)
         self.segmentation_panel.auto_detect_diameter.connect(self._on_auto_detect_diameter)
         self.image_viewer.nucleus_selected.connect(self._on_nucleus_selected)
         
@@ -298,6 +313,7 @@ class MainWindow(QMainWindow):
         
         self.project = Project()
         self.current_image_index = None
+        self.project_panel.clear_images()
         self.project_changed.emit()
         self.statusBar().showMessage("New project created", 3000)
     
@@ -317,6 +333,13 @@ class MainWindow(QMainWindow):
             try:
                 self.project = Project(filepath)
                 self.current_image_index = None
+                
+                # Populate project panel
+                self.project_panel.clear_images()
+                for img_data in self.project.images:
+                    has_seg = img_data.current_segmentation_id is not None
+                    self.project_panel.add_image(img_data.filename, has_segmentation=has_seg)
+                
                 self.project_changed.emit()
                 self.statusBar().showMessage(f"Opened project: {filepath}", 3000)
             except Exception as e:
@@ -374,27 +397,46 @@ class MainWindow(QMainWindow):
                 )
     
     def import_tiff(self):
-        """Import a TIFF image file or Metamorph .nd file"""
+        """Add TIFF image files or Metamorph .nd files to project"""
         if not self.project:
             self.new_project()
         
-        filepath, _ = QFileDialog.getOpenFileName(
+        filepaths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Import Microscopy Image File",
+            "Add Image Files to Project",
             "",
             "Image Files (*.tif *.tiff *.nd *.vsi *.lif);;TIFF Files (*.tif *.tiff);;Metamorph ND Files (*.nd);;Olympus VSI Files (*.vsi);;Leica LIF Files (*.lif);;All Files (*)"
         )
         
-        if filepath:
-            # Check file type and route to appropriate handler
-            if filepath.lower().endswith('.nd'):
-                self._import_metamorph_nd(filepath)
-            elif filepath.lower().endswith('.vsi'):
-                self._import_vsi(filepath)
-            elif filepath.lower().endswith('.lif'):
-                self._import_lif(filepath)
-            else:
-                self._import_single_image(filepath)
+        if filepaths:
+            # Add multiple files to project
+            added_count = 0
+            for filepath in filepaths:
+                try:
+                    # Check file type and route to appropriate handler
+                    if filepath.lower().endswith('.nd'):
+                        self._add_metamorph_nd_to_project(filepath)
+                    elif filepath.lower().endswith('.vsi'):
+                        self._add_vsi_to_project(filepath)
+                    elif filepath.lower().endswith('.lif'):
+                        self._add_lif_to_project(filepath)
+                    else:
+                        self._add_single_image_to_project(filepath)
+                    added_count += 1
+                except Exception as e:
+                    QMessageBox.warning(
+                        self,
+                        "Error Adding Image",
+                        f"Could not add {Path(filepath).name}:\n{str(e)}"
+                    )
+            
+            if added_count > 0:
+                self.statusBar().showMessage(
+                    f"Added {added_count} image(s) to project", 3000
+                )
+                # Select the first added image
+                if self.project_panel.get_image_count() > 0 and self.current_image_index is None:
+                    self.project_panel.set_selected_index(len(self.project.images) - added_count)
     
     def _import_single_image(self, filepath: str):
         """Import a single TIFF image"""
@@ -779,6 +821,169 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to load LIF scene:\n{str(e)}")
     
+    def _add_single_image_to_project(self, filepath: str):
+        """Add a single TIFF image to project without loading it"""
+        try:
+            # Load metadata only (quick)
+            image, metadata = TIFFLoader.load_tiff(filepath)
+            
+            # Create image data entry
+            img_data = ImageData(
+                path=filepath,
+                filename=Path(filepath).name,
+                added_date=datetime.datetime.now().isoformat(),
+                channels=metadata.get('channel_names', []),
+                shape=metadata.get('final_shape'),
+                dtype=metadata.get('dtype'),
+                pixel_size=metadata.get('pixel_size'),
+                bit_depth=metadata.get('bit_depth', 8)
+            )
+            
+            # Add to project
+            img_index = self.project.add_image(img_data)
+            
+            # Add to project panel UI
+            self.project_panel.add_image(img_data.filename, has_segmentation=False)
+            
+            return img_index
+            
+        except Exception as e:
+            raise Exception(f"Could not add image: {str(e)}")
+    
+    def _add_metamorph_nd_to_project(self, nd_filepath: str):
+        """Add Metamorph .nd file to project"""
+        # For now, just add first stage/timepoint
+        # TODO: Implement dialog for user selection
+        try:
+            image, metadata = TIFFLoader.load_metamorph_nd(nd_filepath, stage=0, timepoint=0)
+            
+            img_data = ImageData(
+                path=nd_filepath,
+                filename=Path(nd_filepath).name,
+                added_date=datetime.datetime.now().isoformat(),
+                channels=metadata.get('channel_names', []),
+                shape=metadata.get('final_shape'),
+                dtype=metadata.get('dtype'),
+                pixel_size=metadata.get('pixel_size'),
+                bit_depth=metadata.get('bit_depth', 8)
+            )
+            
+            img_index = self.project.add_image(img_data)
+            self.project_panel.add_image(img_data.filename, has_segmentation=False)
+            
+            return img_index
+        except Exception as e:
+            raise Exception(f"Could not add Metamorph ND: {str(e)}")
+    
+    def _add_vsi_to_project(self, vsi_filepath: str):
+        """Add VSI file to project (first scene)"""
+        try:
+            image, metadata = TIFFLoader.load_vsi(vsi_filepath, scene=0)
+            
+            img_data = ImageData(
+                path=vsi_filepath,
+                filename=Path(vsi_filepath).name,
+                added_date=datetime.datetime.now().isoformat(),
+                channels=metadata.get('channel_names', []),
+                shape=metadata.get('final_shape'),
+                dtype=metadata.get('dtype'),
+                pixel_size=metadata.get('pixel_size'),
+                bit_depth=metadata.get('bit_depth', 8)
+            )
+            
+            img_index = self.project.add_image(img_data)
+            self.project_panel.add_image(img_data.filename, has_segmentation=False)
+            
+            return img_index
+        except Exception as e:
+            raise Exception(f"Could not add VSI: {str(e)}")
+    
+    def _add_lif_to_project(self, lif_filepath: str):
+        """Add LIF file to project (first scene)"""
+        try:
+            image, metadata = TIFFLoader.load_lif(lif_filepath, scene=0)
+            
+            img_data = ImageData(
+                path=lif_filepath,
+                filename=Path(lif_filepath).name,
+                added_date=datetime.datetime.now().isoformat(),
+                channels=metadata.get('channel_names', []),
+                shape=metadata.get('final_shape'),
+                dtype=metadata.get('dtype'),
+                pixel_size=metadata.get('pixel_size'),
+                bit_depth=metadata.get('bit_depth', 8)
+            )
+            
+            img_index = self.project.add_image(img_data)
+            self.project_panel.add_image(img_data.filename, has_segmentation=False)
+            
+            return img_index
+        except Exception as e:
+            raise Exception(f"Could not add LIF: {str(e)}")
+    
+    def _on_project_image_selected(self, index: int):
+        """Load and display selected image from project panel"""
+        if not self.project or index < 0:
+            return
+        
+        try:
+            img_data = self.project.get_image(index)
+            if not img_data:
+                return
+            
+            # Load the actual image data
+            filepath = img_data.path
+            
+            if filepath.lower().endswith('.nd'):
+                image, metadata = TIFFLoader.load_metamorph_nd(filepath, stage=0, timepoint=0)
+            elif filepath.lower().endswith('.vsi'):
+                image, metadata = TIFFLoader.load_vsi(filepath, scene=0)
+            elif filepath.lower().endswith('.lif'):
+                image, metadata = TIFFLoader.load_lif(filepath, scene=0)
+            else:
+                image, metadata = TIFFLoader.load_tiff(filepath)
+            
+            # Update current image
+            self.current_image_index = index
+            
+            # Display in viewer
+            self.image_viewer.set_image(image, metadata)
+            self.segmentation_panel.set_image(image, metadata)
+            
+            # Load existing segmentation if available
+            if img_data.current_segmentation_id is not None:
+                # TODO: Load segmentation from project
+                pass
+            
+            self.image_loaded.emit(index)
+            self.statusBar().showMessage(
+                f"Loaded: {img_data.filename}", 3000
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error Loading Image",
+                f"Could not load image:\n{str(e)}"
+            )
+    
+    def _on_remove_image(self, index: int):
+        """Remove image from project"""
+        if not self.project:
+            return
+        
+        self.project.remove_image(index)
+        self.project_panel.remove_image(index)
+        
+        # Clear viewer if this was the current image
+        if self.current_image_index == index:
+            self.current_image_index = None
+            self.image_viewer.clear()
+        elif self.current_image_index is not None and self.current_image_index > index:
+            self.current_image_index -= 1
+        
+        self.statusBar().showMessage("Image removed from project", 2000)
+    
     def export_measurements(self):
         """Export measurements to file"""
         QMessageBox.information(
@@ -927,6 +1132,9 @@ class MainWindow(QMainWindow):
                 }
                 img_data.segmentation_history.append(seg_record)
                 
+                # Mark as segmented in project panel
+                self.project_panel.set_image_segmented(self.current_image_index, True)
+                
                 # TODO: Store mask data (need to handle large arrays)
         
         self.statusBar().showMessage("Segmentation complete - Ready for analysis", 5000)
@@ -936,6 +1144,130 @@ class MainWindow(QMainWindow):
         self.segmentation_panel.set_running(False)
         QMessageBox.critical(self, "Segmentation Error", error_message)
         self.statusBar().showMessage("Segmentation failed", 5000)
+    
+    def _on_run_batch_segmentation(self, parameters: Dict):
+        """Handle batch segmentation request"""
+        if not self.project or len(self.project.images) == 0:
+            QMessageBox.warning(
+                self,
+                "No Images",
+                "Please add images to the project first."
+            )
+            return
+        
+        # Ask for confirmation
+        from PySide6.QtWidgets import QDialogButtonBox
+        
+        total_images = len(self.project.images)
+        unsegmented_count = sum(1 for img in self.project.images if img.current_segmentation_id is None)
+        
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Batch Segmentation")
+        msg.setText(f"Apply current segmentation settings to all {total_images} images in the project?")
+        msg.setInformativeText(
+            f"Segmented: {total_images - unsegmented_count}\n"
+            f"Not segmented: {unsegmented_count}\n\n"
+            "This will segment all images, including those already segmented.\n"
+            "This may take a while depending on the number of images."
+        )
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        msg.setDefaultButton(QMessageBox.StandardButton.Yes)
+        
+        if msg.exec() != QMessageBox.StandardButton.Yes:
+            return
+        
+        # Prepare image data for batch processing
+        images_data = []
+        for i, img_data in enumerate(self.project.images):
+            images_data.append((i, img_data.path, img_data))
+        
+        # Create and start batch worker
+        self.batch_worker = BatchSegmentationWorker(
+            images_data=images_data,
+            parameters=parameters,
+            gpu_available=self.gpu_available
+        )
+        
+        # Connect signals
+        self.batch_worker.progress.connect(self._on_batch_progress)
+        self.batch_worker.image_finished.connect(self._on_batch_image_finished)
+        self.batch_worker.all_finished.connect(self._on_batch_all_finished)
+        self.batch_worker.error.connect(self._on_batch_image_error)
+        self.batch_worker.status.connect(self.statusBar().showMessage)
+        
+        # Update UI
+        self.segmentation_panel.set_running(True)
+        self.statusBar().showMessage("Starting batch segmentation...", 3000)
+        
+        # Start processing
+        self.batch_worker.start()
+    
+    def _on_batch_progress(self, current: int, total: int):
+        """Handle batch segmentation progress"""
+        self.segmentation_panel.set_batch_progress(current, total)
+    
+    def _on_batch_image_finished(self, img_index: int, masks: np.ndarray, results: Dict):
+        """Handle completion of single image in batch"""
+        # Store results in project
+        img_data = self.project.get_image(img_index)
+        if img_data:
+            # Add to segmentation history
+            import datetime
+            seg_record = {
+                'timestamp': datetime.datetime.now().isoformat(),
+                'parameters': self.segmentation_panel.get_parameters(),
+                'results': results
+            }
+            img_data.segmentation_history.append(seg_record)
+            
+            # Mark as segmented
+            if img_data.current_segmentation_id is None:
+                img_data.current_segmentation_id = len(img_data.segmentation_history) - 1
+            
+            # Update project panel
+            self.project_panel.set_image_segmented(img_index, True)
+        
+        # If this is the currently displayed image, update the view
+        if self.current_image_index == img_index:
+            self.current_masks = masks
+            self.image_viewer.set_mask(masks)
+    
+    def _on_batch_image_error(self, img_index: int, error_msg: str):
+        """Handle error for single image in batch"""
+        print(f"Error processing image {img_index}: {error_msg}")
+    
+    def _on_batch_all_finished(self, summary: Dict):
+        """Handle completion of all batch segmentation"""
+        self.segmentation_panel.set_running(False)
+        
+        # Show summary dialog
+        total = summary.get('total', 0)
+        successful = summary.get('successful', 0)
+        failed = summary.get('failed', 0)
+        total_nuclei = summary.get('total_nuclei', 0)
+        cancelled = summary.get('cancelled', False)
+        
+        if cancelled:
+            msg_title = "Batch Segmentation Cancelled"
+            msg_text = f"Processed {successful} of {total} images before cancellation."
+        else:
+            msg_title = "Batch Segmentation Complete"
+            msg_text = f"Successfully segmented {successful} of {total} images."
+        
+        details = f"Successful: {successful}\nFailed: {failed}\nTotal nuclei detected: {total_nuclei}"
+        
+        QMessageBox.information(
+            self,
+            msg_title,
+            f"{msg_text}\n\n{details}"
+        )
+        
+        self.statusBar().showMessage(
+            f"Batch segmentation complete: {successful}/{total} successful", 5000
+        )
     
     def _on_auto_detect_diameter(self):
         """Handle auto-detect diameter request"""

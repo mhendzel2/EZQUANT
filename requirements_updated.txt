@@ -6,14 +6,14 @@ pyqtgraph>=0.13.0
 # Segmentation models
 cellpose>=4.0.0
 segment-anything>=1.0
-torch>=2.0.0
-torchvision>=0.15.0
+torch>=2.5.0
+torchvision>=0.20.0
 
 # Image I/O
 tifffile>=2023.0.0
 imagecodecs>=2023.0.0
 aicsimageio>=4.14.0  # For VSI, LIF, CZI and other microscopy formats
-bioformats-jar>=2023.0.0  # Java library for bio-formats (optional, via aicsimageio)
+bioformats-jar>=2020.5.27  # Java library for bio-formats (optional, via aicsimageio)
 fsspec>=2023.1.0  # Required by aicsimageio
 
 # Image processing and measurements
