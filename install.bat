@@ -163,8 +163,9 @@ if errorlevel 1 (
 ) else (
     echo NVIDIA GPU detected - installing CUDA-enabled version
     echo This may take several minutes...
+    echo Note: Using CUDA 12.4 for latest GPU support (including RTX 50-series)
     echo.
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 )
 
 if errorlevel 1 (
@@ -217,8 +218,9 @@ echo Optional - Download Cellpose models (recommended):
 echo   venv\Scripts\activate.bat
 echo   python -c "from cellpose import models; models.Cellpose(gpu=False, model_type='nuclei')"
 echo.
-echo For GPU acceleration, ensure NVIDIA CUDA Toolkit 11.8 is installed:
-echo   https://developer.nvidia.com/cuda-11-8-0-download-archive
+echo For GPU acceleration, ensure NVIDIA CUDA Toolkit 12.4 is installed:
+echo   https://developer.nvidia.com/cuda-downloads
+echo   (CUDA 12.4 required for RTX 50-series and newer GPUs with sm_120)
 echo.
 echo ========================================================================
 echo.

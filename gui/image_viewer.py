@@ -367,26 +367,25 @@ class ImageViewer(QWidget):
     def _create_colored_mask(self, mask: np.ndarray) -> np.ndarray:
         """Create a colored visualization of the labeled mask"""
         height, width = mask.shape
-        colored = np.zeros((height, width, 4), dtype=np.uint8)
         
-        unique_labels = np.unique(mask)
-        unique_labels = unique_labels[unique_labels > 0]  # Skip background
+        # 1. Generate random color table (N_labels + 1 x 4)
+        max_id = int(mask.max())
+        if max_id == 0:
+            return np.zeros((height, width, 4), dtype=np.uint8)
+            
+        # Seed ensures colors are consistent for specific IDs
+        np.random.seed(42) 
+        lut = np.random.randint(0, 255, (max_id + 1, 4), dtype=np.uint8)
+        lut[0] = [0, 0, 0, 0]  # Background transparent
+        lut[:, 3] = 150        # Default alpha
         
-        for label in unique_labels:
-            # Generate color from label
-            np.random.seed(int(label))
-            color = np.random.randint(100, 255, 3)
+        # 2. Highlight selected
+        if self.selected_nucleus_id and self.selected_nucleus_id <= max_id:
+            lut[self.selected_nucleus_id] = [255, 255, 0, 200]
             
-            # Highlight selected nucleus
-            if label == self.selected_nucleus_id:
-                color = np.array([255, 255, 0])  # Yellow
-                alpha = 200
-            else:
-                alpha = 150
-            
-            mask_pixels = mask == label
-            colored[mask_pixels, 0:3] = color
-            colored[mask_pixels, 3] = alpha
+        # 3. Vectorized mapping
+        # This replaces the entire for-loop with one operation
+        colored = lut[mask] 
         
         return colored
     

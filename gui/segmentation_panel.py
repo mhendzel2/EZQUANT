@@ -18,6 +18,7 @@ class SegmentationPanel(QWidget):
     
     # Signals
     run_segmentation = Signal(dict)  # Emit segmentation parameters
+    run_batch_segmentation = Signal(dict)  # Emit batch segmentation request
     auto_detect_diameter = Signal()
     
     def __init__(self, parent=None):
@@ -163,11 +164,21 @@ class SegmentationPanel(QWidget):
         layout.addWidget(self.sam_params_group)
         self.sam_params_group.hide()
         
-        # Run button
+        # Run buttons
+        run_buttons_layout = QHBoxLayout()
+        
         self.run_button = QPushButton("Run Segmentation")
         self.run_button.setStyleSheet("QPushButton { font-weight: bold; padding: 8px; }")
         self.run_button.clicked.connect(self._on_run_clicked)
-        layout.addWidget(self.run_button)
+        run_buttons_layout.addWidget(self.run_button, stretch=2)
+        
+        self.batch_button = QPushButton("Apply to All Images")
+        self.batch_button.setStyleSheet("QPushButton { padding: 8px; background-color: #4CAF50; color: white; }")
+        self.batch_button.setToolTip("Apply current settings to all images in project")
+        self.batch_button.clicked.connect(self._on_batch_clicked)
+        run_buttons_layout.addWidget(self.batch_button, stretch=1)
+        
+        layout.addLayout(run_buttons_layout)
         
         # Progress
         self.progress_bar = QProgressBar()
@@ -314,6 +325,7 @@ class SegmentationPanel(QWidget):
     def set_running(self, running: bool):
         """Set UI state for running segmentation"""
         self.run_button.setEnabled(not running)
+        self.batch_button.setEnabled(not running)
         self.cellpose_params_group.setEnabled(not running)
         self.sam_params_group.setEnabled(not running)
         
@@ -323,6 +335,12 @@ class SegmentationPanel(QWidget):
             self.results_text.setText("Running segmentation...")
         else:
             self.progress_bar.hide()
+    
+    def set_batch_progress(self, current: int, total: int):
+        """Set progress for batch segmentation"""
+        self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(current)
+        self.results_text.setText(f"Processing image {current} of {total}...")
     
     def _on_engine_changed(self, checked: bool):
         """Handle engine radio button change"""
@@ -343,6 +361,11 @@ class SegmentationPanel(QWidget):
         
         params = self.get_parameters()
         self.run_segmentation.emit(params)
+    
+    def _on_batch_clicked(self):
+        """Handle batch segmentation button click"""
+        params = self.get_parameters()
+        self.run_batch_segmentation.emit(params)
     
     def _on_load_history(self):
         """Load parameters from history"""

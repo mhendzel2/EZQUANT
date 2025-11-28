@@ -5,14 +5,24 @@ Visualization panel for displaying measurement results with Plotly
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QComboBox, QLabel, QGroupBox, QCheckBox,
                                QScrollArea, QSplitter)
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, Qt, QObject, Slot
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 from typing import Optional, Dict, List
+
+
+class Bridge(QObject):
+    """Bridge between JavaScript and Python"""
+    nucleusClicked = Signal(int)
+    
+    @Slot(int)
+    def on_click(self, nucleus_id):
+        self.nucleusClicked.emit(nucleus_id)
 
 
 class VisualizationPanel(QWidget):
@@ -79,6 +89,13 @@ class VisualizationPanel(QWidget):
         self.plot_view = QWebEngineView()
         self.plot_view.setMinimumHeight(500)
         layout.addWidget(self.plot_view)
+        
+        # Setup WebChannel
+        self.bridge = Bridge()
+        self.bridge.nucleusClicked.connect(self.nucleus_selected)
+        self.channel = QWebChannel()
+        self.channel.registerObject("bridge", self.bridge)
+        self.plot_view.page().setWebChannel(self.channel)
         
         # Export controls
         export_layout = QHBoxLayout()
@@ -396,7 +413,12 @@ class VisualizationPanel(QWidget):
         
         # Add click event handler
         callback_js = """
+        <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
         <script>
+        new QWebChannel(qt.webChannelTransport, function(channel) {
+            window.bridge = channel.objects.bridge;
+        });
+
         var plot = document.getElementsByClassName('plotly')[0];
         plot.on('plotly_click', function(data){
             if (data.points.length > 0) {
@@ -405,8 +427,9 @@ class VisualizationPanel(QWidget):
                 var nucleus_id = point.customdata ? point.customdata[0] : point.pointIndex + 1;
                 console.log('Clicked nucleus:', nucleus_id);
                 
-                // This would communicate back to Qt - placeholder for now
-                // In full implementation, use QWebChannel or similar
+                if (window.bridge) {
+                    window.bridge.on_click(nucleus_id);
+                }
             }
         });
         </script>

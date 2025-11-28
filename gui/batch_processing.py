@@ -14,134 +14,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-
-class BatchProcessingWorker(QThread):
-    """Worker thread for batch processing"""
-    
-    progress = Signal(int, int, str)  # current, total, message
-    image_complete = Signal(str, dict)  # image_name, results
-    finished = Signal(list)  # List of all results
-    error = Signal(str, str)  # image_name, error_message
-    
-    def __init__(self, file_paths: List[str], config: Dict):
-        super().__init__()
-        self.file_paths = file_paths
-        self.config = config
-        self.should_stop = False
-    
-    def run(self):
-        """Run batch processing"""
-        results = []
-        
-        for i, file_path in enumerate(self.file_paths):
-            if self.should_stop:
-                break
-            
-            image_name = Path(file_path).name
-            self.progress.emit(i + 1, len(self.file_paths), f"Processing {image_name}...")
-            
-            try:
-                result = self._process_image(file_path)
-                results.append(result)
-                self.image_complete.emit(image_name, result)
-            except Exception as e:
-                error_msg = str(e)
-                self.error.emit(image_name, error_msg)
-                results.append({
-                    'image_name': image_name,
-                    'status': 'error',
-                    'error': error_msg
-                })
-        
-        self.finished.emit(results)
-    
-    def _process_image(self, file_path: str) -> Dict:
-        """Process single image"""
-        from core.image_io import TIFFLoader
-        from core.segmentation import SegmentationEngine
-        from core.quality_control import QualityControl
-        from core.measurements import MeasurementEngine
-        
-        image_name = Path(file_path).name
-        result = {
-            'image_name': image_name,
-            'file_path': file_path,
-            'status': 'processing',
-            'timestamp': datetime.now()
-        }
-        
-        # Load image
-        loader = TIFFLoader()
-        image_data, metadata = loader.load_tiff(file_path)
-        result['image_shape'] = image_data.shape
-        
-        # Segment
-        seg_engine = SegmentationEngine()
-        seg_params = self.config.get('segmentation_params', {})
-        
-        # Prepare image for segmentation
-        if image_data.ndim == 4:
-            # Use DNA channel or first channel
-            dna_idx = self.config.get('dna_channel', 0)
-            seg_image = image_data[:, dna_idx, :, :]
-        else:
-            seg_image = image_data
-        
-        if self.config.get('method') == 'cellpose':
-            masks, stats = seg_engine.segment_cellpose(
-                seg_image,
-                **seg_params
-            )
-        else:
-            masks, stats = seg_engine.segment_sam(seg_image)
-        
-        result['n_nuclei'] = stats['n_objects']
-        result['mean_area'] = stats.get('mean_area', 0)
-        result['median_area'] = stats.get('median_area', 0)
-        
-        # QC analysis
-        if self.config.get('run_qc', True):
-            qc = QualityControl()
-            qc_results = qc.analyze_dna_intensity(masks, seg_image)
-            
-            result['flagged_count'] = qc_results.get('flagged_count', 0)
-            result['flagged_percentage'] = qc_results.get('flagged_percentage', 0)
-            result['mean_dna_intensity'] = qc_results.get('mean_intensity', 0)
-            result['cv_dna_intensity'] = qc_results.get('cv_intensity', 0)
-            
-            # QC pass/fail (< 10% flagged)
-            result['qc_pass'] = result['flagged_percentage'] < 10
-        
-        # Measurements
-        if self.config.get('run_measurements', False):
-            measurement_engine = MeasurementEngine()
-            measurement_engine.set_enabled_categories(
-                self.config.get('measurement_categories', ['basic_shape'])
-            )
-            
-            # Prepare intensity images
-            intensity_images = {}
-            if image_data.ndim == 4:
-                for c in range(image_data.shape[1]):
-                    intensity_images[f'channel_{c}'] = image_data[:, c, :, :]
-            else:
-                intensity_images['channel_0'] = image_data
-            
-            measurements_df = measurement_engine.extract_measurements(
-                masks,
-                intensity_images,
-                is_3d=self.config.get('is_3d', False)
-            )
-            
-            result['measurements'] = measurements_df
-            result['n_measurements'] = len(measurements_df)
-        
-        result['status'] = 'complete'
-        return result
-    
-    def stop(self):
-        """Stop processing"""
-        self.should_stop = True
+from workers.segmentation_worker import BatchSegmentationWorker
+from core.project_data import ImageData
 
 
 class BatchProcessingDialog(QDialog):
@@ -150,7 +24,7 @@ class BatchProcessingDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.file_paths: List[str] = []
-        self.worker: Optional[BatchProcessingWorker] = None
+        self.worker: Optional[BatchSegmentationWorker] = None
         self.results: List[Dict] = []
         
         self.setWindowTitle("Batch Processing")
@@ -324,26 +198,35 @@ class BatchProcessingDialog(QDialog):
             return
         
         # Gather configuration
-        config = {
-            'method': self.method_combo.currentText(),
-            'segmentation_params': {
-                'model_type': self.model_combo.currentText(),
-                'diameter': None,  # Auto-detect
-                'channels': [0, 0]
-            },
+        parameters = {
+            'engine': self.method_combo.currentText(),
+            'model_name': self.model_combo.currentText(),
+            'model_type': 'vit_h', # Default for SAM if selected
+            'diameter': None,  # Auto-detect
+            'channels': [0, 0], # Need to handle DNA channel properly
             'dna_channel': self.channel_spin.value(),
-            'run_qc': self.qc_check.isChecked(),
-            'run_measurements': self.measurements_check.isChecked(),
-            'measurement_categories': ['basic_shape', 'intensity_stats'],
-            'is_3d': False
+            'do_3d': False,
+            'automatic': True # For SAM
         }
         
+        # Prepare images data for worker
+        images_data = []
+        for i, file_path in enumerate(self.file_paths):
+            # Create minimal ImageData
+            img_data = ImageData(
+                path=file_path,
+                filename=Path(file_path).name,
+                added_date=datetime.now().isoformat(),
+                channels=[]
+            )
+            images_data.append((i, file_path, img_data))
+        
         # Create and start worker
-        self.worker = BatchProcessingWorker(self.file_paths, config)
+        self.worker = BatchSegmentationWorker(images_data, parameters)
         self.worker.progress.connect(self._on_progress)
-        self.worker.image_complete.connect(self._on_image_complete)
+        self.worker.image_finished.connect(self._on_image_finished)
         self.worker.error.connect(self._on_error)
-        self.worker.finished.connect(self._on_finished)
+        self.worker.all_finished.connect(self._on_all_finished)
         
         # Update UI
         self.start_btn.setEnabled(False)
@@ -362,37 +245,38 @@ class BatchProcessingDialog(QDialog):
     def _stop_processing(self):
         """Stop batch processing"""
         if self.worker:
-            self.worker.stop()
+            self.worker.cancel()
             self.log_text.append("\nStopping processing...")
     
-    def _on_progress(self, current: int, total: int, message: str):
+    def _on_progress(self, current: int, total: int):
         """Handle progress update"""
-        self.progress_label.setText(f"{current}/{total}: {message}")
+        self.progress_label.setText(f"Processing image {current}/{total}")
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
     
-    def _on_image_complete(self, image_name: str, result: Dict):
+    def _on_image_finished(self, index: int, masks: np.ndarray, info: Dict):
         """Handle image completion"""
+        # Reconstruct result dict for compatibility
+        image_name = self.file_paths[index]
+        image_name = Path(image_name).name
+        
+        result = info.copy()
+        result['image_name'] = image_name
+        result['status'] = 'complete'
+        result['n_nuclei'] = info.get('nucleus_count', 0)
+        
         self.results.append(result)
         
-        status = result.get('status', 'unknown')
         n_nuclei = result.get('n_nuclei', 0)
-        qc_pass = result.get('qc_pass', None)
-        
-        log_msg = f"✓ {image_name}: {n_nuclei} nuclei"
-        if qc_pass is not None:
-            log_msg += f", QC: {'PASS' if qc_pass else 'FAIL'}"
-        
-        self.log_text.append(log_msg)
+        self.log_text.append(f"✓ {image_name}: {n_nuclei} nuclei")
     
-    def _on_error(self, image_name: str, error: str):
+    def _on_error(self, index: int, error: str):
         """Handle processing error"""
+        image_name = Path(self.file_paths[index]).name
         self.log_text.append(f"✗ {image_name}: ERROR - {error}")
     
-    def _on_finished(self, results: List[Dict]):
+    def _on_all_finished(self, summary: Dict):
         """Handle completion"""
-        self.results = results
-        
         # Update UI
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -404,13 +288,12 @@ class BatchProcessingDialog(QDialog):
         self.progress_label.setText("Complete")
         self.progress_bar.setValue(self.progress_bar.maximum())
         
-        # Summary
-        successful = sum(1 for r in results if r.get('status') == 'complete')
-        failed = len(results) - successful
+        successful = summary.get('successful', 0)
+        failed = summary.get('failed', 0)
         
         self.log_text.append(f"\n{'='*50}")
         self.log_text.append(f"Batch processing complete at {datetime.now().strftime('%H:%M:%S')}")
-        self.log_text.append(f"Successful: {successful}/{len(results)}")
+        self.log_text.append(f"Successful: {successful}/{summary.get('total', 0)}")
         if failed > 0:
             self.log_text.append(f"Failed: {failed}")
         

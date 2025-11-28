@@ -172,21 +172,41 @@ class TIFFLoader:
             
         elif ndim == 3:
             # Could be (C, Y, X) or (Z, Y, X) or (Y, X, C)
-            # Heuristic: if smallest dimension is <=16, it's likely channels
             min_dim_idx = np.argmin(image.shape)
             min_dim_size = image.shape[min_dim_idx]
             
-            if min_dim_size <= 16 and min_dim_idx == 0:
-                # Likely (C, Y, X)
-                metadata['n_channels'] = image.shape[0]
-                metadata['n_slices'] = 1
-                metadata['is_3d'] = False
-            elif min_dim_size <= 16 and min_dim_idx == 2:
-                # Likely (Y, X, C) -> transpose to (C, Y, X)
-                image = np.transpose(image, (2, 0, 1))
-                metadata['n_channels'] = image.shape[0]
-                metadata['n_slices'] = 1
-                metadata['is_3d'] = False
+            # Check metadata first
+            if metadata.get('n_slices', 0) > 1 and metadata.get('n_channels', 0) <= 1:
+                 # Explicitly Z-stack
+                 image = image[:, np.newaxis, :, :]
+                 metadata['is_3d'] = True
+            elif metadata.get('n_channels', 0) > 1:
+                 # Explicitly channels
+                 if min_dim_idx == 2:
+                     image = np.transpose(image, (2, 0, 1))
+                 metadata['n_slices'] = 1
+                 metadata['is_3d'] = False
+            
+            # Heuristics
+            elif min_dim_size <= 4 and image.dtype == np.uint8:
+                # Likely RGB/RGBA
+                if min_dim_idx == 0:
+                    # (C, Y, X)
+                    metadata['n_channels'] = image.shape[0]
+                    metadata['n_slices'] = 1
+                    metadata['is_3d'] = False
+                elif min_dim_idx == 2:
+                    # (Y, X, C) -> (C, Y, X)
+                    image = np.transpose(image, (2, 0, 1))
+                    metadata['n_channels'] = image.shape[0]
+                    metadata['n_slices'] = 1
+                    metadata['is_3d'] = False
+                else:
+                    # Weird case, assume Z
+                    image = image[:, np.newaxis, :, :]
+                    metadata['n_channels'] = 1
+                    metadata['n_slices'] = image.shape[0]
+                    metadata['is_3d'] = True
             else:
                 # Assume (Z, Y, X) single channel 3D
                 # Convert to (Z, C, Y, X) with C=1
