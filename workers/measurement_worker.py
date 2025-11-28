@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Optional, List
 import time
+from pathlib import Path
 
 from core.measurements import MeasurementEngine
 from core.plugin_loader import PluginLoader
@@ -120,3 +121,98 @@ class MeasurementWorker(QThread):
             
         except Exception as e:
             self.error.emit(str(e))
+
+
+class BatchMeasurementWorker(QThread):
+    """Worker thread for executing measurements on multiple images"""
+    
+    # Signals
+    finished = Signal(pd.DataFrame)  # combined measurements DataFrame
+    error = Signal(str)  # error message
+    progress = Signal(int)  # progress percentage
+    status = Signal(str)  # status message
+    
+    def __init__(self,
+                 images_data: List[tuple], # (index, path, group, segmentation_path/data)
+                 config: Dict,
+                 plugin_loader: Optional[PluginLoader] = None):
+        super().__init__()
+        self.images_data = images_data
+        self.config = config
+        self.plugin_loader = plugin_loader
+        self.is_cancelled = False
+        
+    def run(self):
+        """Run batch measurements"""
+        try:
+            all_measurements = []
+            total = len(self.images_data)
+            
+            for i, (img_index, img_path, group, mask_data) in enumerate(self.images_data):
+                if self.is_cancelled:
+                    break
+                    
+                self.status.emit(f"Processing image {i+1}/{total}: {Path(img_path).name}")
+                self.progress.emit(int((i / total) * 100))
+                
+                # Load image
+                from core.image_io import TIFFLoader
+                image, metadata = TIFFLoader.load_tiff(img_path)
+                
+                # Prepare intensity images
+                intensity_images = {}
+                channel_names = metadata.get('channel_names', [])
+                
+                # Handle 3D vs 2D (simplified logic similar to main window)
+                is_3d = image.ndim == 4
+                if is_3d:
+                    if self.config.get('is_3d', False):
+                        for c, ch_name in enumerate(channel_names):
+                            intensity_images[ch_name] = image[:, c, :, :]
+                    else:
+                        for c, ch_name in enumerate(channel_names):
+                            intensity_images[ch_name] = np.max(image[:, c, :, :], axis=0)
+                else:
+                    for c, ch_name in enumerate(channel_names):
+                        intensity_images[ch_name] = image[c, :, :]
+                
+                # Run measurements
+                engine = MeasurementEngine(
+                    masks=mask_data,
+                    intensity_images=intensity_images,
+                    pixel_size=metadata.get('pixel_size', (1.0, 1.0, 1.0)),
+                    plugin_loader=self.plugin_loader
+                )
+                
+                df = engine.compute_measurements(
+                    categories=self.config.get('enabled_categories', []),
+                    plugins=self.config.get('enabled_plugins', [])
+                )
+                
+                # Add metadata columns
+                df['Image_ID'] = img_index
+                df['Image_Name'] = Path(img_path).name
+                df['Group'] = group
+                
+                # Cell cycle assignment if requested
+                if self.config.get('assign_phases', False) and 'dna_channel' in self.config:
+                    dna_col = f"{self.config['dna_channel']}_mean_intensity"
+                    if dna_col in df.columns:
+                        from core.quality_control import QualityControl
+                        df = QualityControl.assign_cell_cycle_phases(df, dna_col)
+                
+                all_measurements.append(df)
+                
+            if all_measurements:
+                combined_df = pd.concat(all_measurements, ignore_index=True)
+                self.finished.emit(combined_df)
+            else:
+                self.finished.emit(pd.DataFrame())
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))
+            
+    def cancel(self):
+        self.is_cancelled = True
