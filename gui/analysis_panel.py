@@ -184,6 +184,7 @@ class AnalysisPanel(QWidget):
         # Gather configuration
         config = {
             'is_3d': self.workflow_3d_radio.isChecked(),
+            'pool_by_group': self.pool_check.isChecked(),
             'enabled_categories': [],
             'enabled_plugins': [],
             'assign_phases': self.cell_cycle_check.isChecked()
