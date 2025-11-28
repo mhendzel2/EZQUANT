@@ -5,7 +5,7 @@ Main window for the Nuclei Segmentation Application
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QMenuBar, QMenu, QToolBar, QStatusBar,
                                QFileDialog, QMessageBox, QDockWidget, QLabel,
-                               QSplitter)
+                               QSplitter, QInputDialog, QProgressDialog, QDialogButtonBox)
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from pathlib import Path
@@ -183,6 +183,11 @@ class MainWindow(QMainWindow):
         self.import_action.setShortcut(QKeySequence("Ctrl+I"))
         self.import_action.setStatusTip("Import a TIFF image file")
         self.import_action.triggered.connect(self.import_tiff)
+
+        self.import_folder_action = QAction("Import &Folder...", self)
+        self.import_folder_action.setShortcut(QKeySequence("Ctrl+Shift+I"))
+        self.import_folder_action.setStatusTip("Import all images from a folder")
+        self.import_folder_action.triggered.connect(self.import_folder)
         
         self.export_action = QAction("&Export Measurements...", self)
         self.export_action.setShortcut(QKeySequence("Ctrl+E"))
@@ -242,6 +247,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.save_as_action)
         file_menu.addSeparator()
         file_menu.addAction(self.import_action)
+        file_menu.addAction(self.import_folder_action)
         file_menu.addAction(self.export_action)
         file_menu.addAction(self.batch_action)
         file_menu.addSeparator()
@@ -277,6 +283,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.save_action)
         toolbar.addSeparator()
         toolbar.addAction(self.import_action)
+        toolbar.addAction(self.import_folder_action)
         toolbar.addAction(self.export_action)
         toolbar.addSeparator()
         toolbar.addAction(self.undo_action)
@@ -396,7 +403,7 @@ class MainWindow(QMainWindow):
             else:
                 self._import_single_image(filepath)
     
-    def _import_single_image(self, filepath: str):
+    def _import_single_image(self, filepath: str, group: str = "Default"):
         """Import a single TIFF image"""
         try:
             # Load image
@@ -408,6 +415,7 @@ class MainWindow(QMainWindow):
                 filename=Path(filepath).name,
                 added_date=str(Path(filepath).stat().st_mtime),
                 channels=metadata.get('channel_names', []),
+                group=group,
                 shape=metadata.get('final_shape'),
                 dtype=metadata.get('dtype'),
                 pixel_size=metadata.get('pixel_size'),
@@ -435,7 +443,7 @@ class MainWindow(QMainWindow):
                 f"Could not import TIFF file:\n{str(e)}"
             )
     
-    def _import_metamorph_nd(self, nd_filepath: str):
+    def _import_metamorph_nd(self, nd_filepath: str, group: str = "Default"):
         """Import Metamorph .nd file series"""
         try:
             # Get info about the .nd file
@@ -490,6 +498,7 @@ class MainWindow(QMainWindow):
                         filename=Path(nd_filepath).name,
                         added_date=str(Path(nd_filepath).stat().st_mtime),
                         channels=metadata.get('channel_names', []),
+                        group=group,
                         shape=metadata.get('final_shape'),
                         dtype=metadata.get('dtype'),
                         pixel_size=metadata.get('pixel_size'),
@@ -507,7 +516,7 @@ class MainWindow(QMainWindow):
                 
                 elif choice in [1, 2]:
                     # Import multiple
-                    self._import_metamorph_batch(nd_filepath, import_all=(choice == 2))
+                    self._import_metamorph_batch(nd_filepath, import_all=(choice == 2), group=group)
             
         except Exception as e:
             QMessageBox.critical(
@@ -516,7 +525,7 @@ class MainWindow(QMainWindow):
                 f"Could not import .nd file:\n{str(e)}"
             )
     
-    def _import_metamorph_batch(self, nd_filepath: str, import_all: bool = False):
+    def _import_metamorph_batch(self, nd_filepath: str, import_all: bool = False, group: str = "Default"):
         """Import multiple images from Metamorph series"""
         from core.metamorph_nd import MetamorphNDFile
         
@@ -564,6 +573,7 @@ class MainWindow(QMainWindow):
                             filename=filename,
                             added_date=str(Path(nd_filepath).stat().st_mtime),
                             channels=metadata.get('channel_names', []),
+                            group=group,
                             shape=metadata.get('final_shape'),
                             dtype=metadata.get('dtype'),
                             pixel_size=metadata.get('pixel_size'),
@@ -1090,3 +1100,80 @@ class MainWindow(QMainWindow):
             self.project.close()
         
         event.accept()
+    
+    def import_folder(self):
+        """Import all supported images from a folder"""
+        if not self.project:
+            self.new_project()
+            
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Folder to Import",
+            ""
+        )
+        
+        if not folder_path:
+            return
+            
+        # Ask for group name
+        group, ok = QInputDialog.getText(
+            self, 
+            "Group Name", 
+            "Enter group/treatment name for these images:",
+            text="Default"
+        )
+        
+        if not ok:
+            return
+            
+        # Find all supported files
+        supported_extensions = ['.tif', '.tiff', '.nd', '.vsi', '.lif']
+        files_to_import = []
+        
+        folder = Path(folder_path)
+        for ext in supported_extensions:
+            files_to_import.extend(list(folder.glob(f"*{ext}")))
+            files_to_import.extend(list(folder.glob(f"*{ext.upper()}")))
+            
+        # Remove duplicates (case insensitivity might cause duplicates on Windows)
+        files_to_import = list(set(files_to_import))
+        files_to_import.sort()
+        
+        if not files_to_import:
+            QMessageBox.information(self, "No Images Found", f"No supported images found in {folder_path}")
+            return
+            
+        # Progress dialog
+        progress = QProgressDialog("Importing images...", "Cancel", 0, len(files_to_import), self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        
+        count = 0
+        for i, filepath in enumerate(files_to_import):
+            if progress.wasCanceled():
+                break
+                
+            progress.setLabelText(f"Importing {filepath.name}...")
+            
+            try:
+                str_path = str(filepath)
+                if str_path.lower().endswith('.nd'):
+                    # For ND files, we might want to skip the interactive dialog in batch mode
+                    # But for now, let's just call the method which might show dialogs
+                    # Ideally we would refactor to avoid dialogs in batch mode
+                    self._import_metamorph_nd(str_path, group=group)
+                elif str_path.lower().endswith('.vsi'):
+                    self._import_vsi(str_path) # TODO: Add group support to VSI
+                elif str_path.lower().endswith('.lif'):
+                    self._import_lif(str_path) # TODO: Add group support to LIF
+                else:
+                    self._import_single_image(str_path, group=group)
+                
+                count += 1
+            except Exception as e:
+                print(f"Error importing {filepath.name}: {e}")
+                
+            progress.setValue(i + 1)
+            
+        progress.close()
+        self.statusBar().showMessage(f"Imported {count} files from folder", 5000)

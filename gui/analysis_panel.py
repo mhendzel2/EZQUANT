@@ -47,6 +47,10 @@ class AnalysisPanel(QWidget):
         self.workflow_3d_radio.setToolTip("Analyze entire 3D volume")
         workflow_layout.addWidget(self.workflow_3d_radio)
         
+        self.pool_check = QCheckBox("Pool all images by Group")
+        self.pool_check.setToolTip("Combine measurements from all images in the project, grouped by their assigned group")
+        workflow_layout.addWidget(self.pool_check)
+        
         workflow_layout.addStretch()
         workflow_group.setLayout(workflow_layout)
         config_layout.addWidget(workflow_group)

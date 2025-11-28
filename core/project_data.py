@@ -21,6 +21,7 @@ class ImageData:
     added_date: str
     channels: List[str]
     dna_channel: Optional[int] = None
+    group: str = "Default"  # Group/Treatment name for pooled analysis
     shape: tuple = None
     dtype: str = None
     pixel_size: Optional[float] = None
