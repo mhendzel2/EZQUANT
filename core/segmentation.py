@@ -5,6 +5,13 @@ Core segmentation module wrapping Cellpose and SAM APIs
 import numpy as np
 from typing import Dict, Tuple, Optional, List
 import torch
+import sys
+import os
+
+def get_resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 
 class SegmentationEngine:
@@ -62,7 +69,7 @@ class SegmentationEngine:
             )
         
         # Prepare image
-        imgs = self._prepare_image_for_cellpose(image)
+        imgs = self._prepare_image_for_cellpose(image, do_3d=do_3d)
         
         # Run segmentation
         masks, flows, styles, diams = self._cellpose_model.eval(
@@ -141,7 +148,7 @@ class SegmentationEngine:
         # Load model if needed
         if self._sam_predictor is None:
             # Note: Model checkpoint path needs to be configured
-            checkpoint_path = f"models/sam_{model_type}.pth"
+            checkpoint_path = get_resource_path(f"models/sam_{model_type}.pth")
             sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
             if self.gpu_available:
                 sam.to(device='cuda')
@@ -204,7 +211,7 @@ class SegmentationEngine:
         
         return masks, info
     
-    def _prepare_image_for_cellpose(self, image: np.ndarray) -> np.ndarray:
+    def _prepare_image_for_cellpose(self, image: np.ndarray, do_3d: bool = False) -> np.ndarray:
         """Prepare image for Cellpose (expects channels-last or grayscale)"""
         if image.ndim == 2:
             # Single channel 2D: (Y, X)
@@ -218,13 +225,20 @@ class SegmentationEngine:
                 # Likely Z-stack, take middle slice
                 return image[image.shape[0] // 2]
         elif image.ndim == 4:
-            # (Z, C, Y, X) - take middle Z slice and transpose C
-            z_mid = image.shape[0] // 2
-            slice_img = image[z_mid]  # (C, Y, X)
-            if slice_img.shape[0] <= 3:
-                return np.transpose(slice_img, (1, 2, 0))
+            # (Z, C, Y, X)
+            if do_3d:
+                # Cellpose expects (Z, Y, X) for single channel 3D
+                # or (Z, C, Y, X) / (Z, Y, X, C) depending on channel settings
+                # Standardize to (Z, Y, X, C)
+                return np.transpose(image, (0, 2, 3, 1))
             else:
-                return slice_img[0]  # Take first channel
+                # Take middle slice for 2D preview/segmentation
+                z_mid = image.shape[0] // 2
+                slice_img = image[z_mid]  # (C, Y, X)
+                if slice_img.shape[0] <= 3:
+                    return np.transpose(slice_img, (1, 2, 0))
+                else:
+                    return slice_img[0]  # Take first channel
         
         return image
     

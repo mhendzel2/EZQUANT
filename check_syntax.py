@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 # Project structure
-project_root = Path("C:/NucleiSegmentationApp")
+project_root = Path(".")
 
 print("=" * 70)
 print("NUCLEI SEGMENTATION APP - SYNTAX VALIDATION")
