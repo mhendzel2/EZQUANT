@@ -32,9 +32,9 @@ Or manually:
 # Activate virtual environment
 venv\Scripts\activate
 
-# Upgrade PyTorch
+# Upgrade PyTorch to Nightly with CUDA 12.4
 pip uninstall -y torch torchvision
-pip install torch>=2.5.0 torchvision>=0.20.0 --index-url https://download.pytorch.org/whl/cu124
+pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu124
 ```
 
 #### For Fresh Installations:

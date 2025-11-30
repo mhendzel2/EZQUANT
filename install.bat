@@ -163,9 +163,9 @@ if errorlevel 1 (
 ) else (
     echo NVIDIA GPU detected - installing CUDA-enabled version
     echo This may take several minutes...
-    echo Note: Using CUDA 12.4 for latest GPU support (including RTX 50-series)
+    echo Note: Using PyTorch Nightly with CUDA 12.4 for RTX 50-series (sm_120) support
     echo.
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+    pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu124
 )
 
 if errorlevel 1 (
