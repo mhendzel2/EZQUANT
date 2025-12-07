@@ -25,7 +25,9 @@ class SegmentationEngine:
         
         # Model instances (lazy loaded)
         self._cellpose_model = None
+        self._cellpose_model_type = None  # Track currently loaded model type
         self._sam_predictor = None
+        self._sam_model_type = None  # Track currently loaded SAM model type
         
         # Available models
         self.cellpose_models = ['nuclei', 'cyto', 'cyto2', 'cyto3', 'cyto_sam']
@@ -55,18 +57,74 @@ class SegmentationEngine:
             tuple: (masks, info_dict)
                 masks: Labeled mask array (same spatial dims as input)
                 info_dict: Dictionary with segmentation statistics
+                
+        Raises:
+            ValueError: If parameters are invalid
+            TypeError: If image type is invalid
         """
         from cellpose import models
         import time
         
         start_time = time.time()
         
-        # Initialize model if needed
-        if self._cellpose_model is None or self._cellpose_model.pretrained_model != model_name:
+        # === Input Validation ===
+        
+        # Validate image type and shape
+        if not isinstance(image, np.ndarray):
+            raise TypeError(f"Image must be a numpy array, got {type(image).__name__}")
+        
+        if image.ndim < 2 or image.ndim > 4:
+            raise ValueError(
+                f"Image must have 2-4 dimensions, got {image.ndim}. "
+                f"Expected shapes: (Y, X), (C, Y, X), (Z, Y, X), or (Z, C, Y, X)"
+            )
+        
+        if image.size == 0:
+            raise ValueError("Image is empty (size=0)")
+        
+        # Validate model name
+        if model_name not in self.cellpose_models:
+            raise ValueError(
+                f"Unknown Cellpose model: '{model_name}'. "
+                f"Available models: {', '.join(self.cellpose_models)}"
+            )
+        
+        # Validate diameter
+        if diameter is not None:
+            if not isinstance(diameter, (int, float)):
+                raise TypeError(f"Diameter must be a number, got {type(diameter).__name__}")
+            if diameter <= 0:
+                raise ValueError(f"Diameter must be positive, got {diameter}")
+        
+        # Validate thresholds
+        if not 0 <= flow_threshold <= 3:
+            raise ValueError(f"flow_threshold must be between 0 and 3, got {flow_threshold}")
+        
+        if not -6 <= cellprob_threshold <= 6:
+            raise ValueError(f"cellprob_threshold must be between -6 and 6, got {cellprob_threshold}")
+        
+        # Validate channels
+        if not isinstance(channels, (list, tuple)) or len(channels) != 2:
+            raise ValueError(f"channels must be a list/tuple of 2 integers, got {channels}")
+        
+        # Warn about 3D mode limitations
+        if do_3d and image.ndim < 3:
+            import warnings
+            warnings.warn(
+                "do_3d=True but image has less than 3 dimensions. "
+                "2D segmentation will be performed.",
+                UserWarning
+            )
+        
+        # === Model Initialization ===
+        
+        # Initialize model if needed (using instance variable to track model type)
+        if self._cellpose_model is None or self._cellpose_model_type != model_name:
             self._cellpose_model = models.CellposeModel(
                 gpu=self.gpu_available,
                 model_type=model_name
             )
+            self._cellpose_model_type = model_name
         
         # Prepare image
         imgs = self._prepare_image_for_cellpose(image, do_3d=do_3d)
@@ -120,21 +178,36 @@ class SegmentationEngine:
                    model_type: str = 'vit_h',
                    points: Optional[np.ndarray] = None,
                    boxes: Optional[np.ndarray] = None,
-                   automatic: bool = True) -> Tuple[np.ndarray, Dict]:
+                   automatic: bool = True,
+                   process_3d_per_slice: bool = False,
+                   random_seed: Optional[int] = 42) -> Tuple[np.ndarray, Dict]:
         """
         Perform segmentation using SAM (Segment Anything Model)
         
+        Note: SAM is inherently a 2D model. For 3D/4D images, by default only
+        the middle slice is processed. Set process_3d_per_slice=True to process
+        each slice independently.
+        
         Args:
-            image: Image array with shape (C, Y, X) or (Y, X)
+            image: Image array with shape (Z, C, Y, X), (C, Y, X), (Z, Y, X), or (Y, X)
             model_type: SAM model type ('vit_h', 'vit_l', 'vit_b')
             points: Point prompts with shape (N, 2) as (x, y)
             boxes: Box prompts with shape (N, 4) as (x1, y1, x2, y2)
             automatic: If True, use automatic mask generation
+            process_3d_per_slice: If True and image is 3D/4D, process each Z-slice
+                                 independently. If False, only middle slice is used.
+            random_seed: Random seed for reproducibility (default: 42)
         
         Returns:
             tuple: (masks, info_dict)
                 masks: Labeled mask array
                 info_dict: Dictionary with segmentation statistics
+                
+        Raises:
+            ImportError: If segment-anything is not installed
+            FileNotFoundError: If SAM checkpoint file is missing
+            ValueError: If parameters are invalid
+            TypeError: If image type is invalid
         """
         try:
             from segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskGenerator
@@ -143,16 +216,105 @@ class SegmentationEngine:
         
         import time
         
+        # === Input Validation ===
+        
+        # Validate image type and shape
+        if not isinstance(image, np.ndarray):
+            raise TypeError(f"Image must be a numpy array, got {type(image).__name__}")
+        
+        if image.ndim < 2 or image.ndim > 4:
+            raise ValueError(
+                f"Image must have 2-4 dimensions, got {image.ndim}. "
+                f"Expected shapes: (Y, X), (C, Y, X), (Z, Y, X), or (Z, C, Y, X)"
+            )
+        
+        if image.size == 0:
+            raise ValueError("Image is empty (size=0)")
+        
+        # Validate points if provided
+        if points is not None:
+            if not isinstance(points, np.ndarray):
+                raise TypeError(f"points must be a numpy array, got {type(points).__name__}")
+            if points.ndim != 2 or points.shape[1] != 2:
+                raise ValueError(f"points must have shape (N, 2), got {points.shape}")
+        
+        # Validate boxes if provided
+        if boxes is not None:
+            if not isinstance(boxes, np.ndarray):
+                raise TypeError(f"boxes must be a numpy array, got {type(boxes).__name__}")
+            if boxes.ndim != 2 or boxes.shape[1] != 4:
+                raise ValueError(f"boxes must have shape (N, 4), got {boxes.shape}")
+        
+        # Validate automatic mode vs prompts
+        if not automatic and points is None and boxes is None:
+            raise ValueError(
+                "When automatic=False, either points or boxes must be provided"
+            )
+        
+        # Set random seed for reproducibility
+        if random_seed is not None:
+            np.random.seed(random_seed)
+            torch.manual_seed(random_seed)
+        
         start_time = time.time()
         
-        # Load model if needed
-        if self._sam_predictor is None:
+        # Validate model type
+        if model_type not in self.sam_models:
+            raise ValueError(
+                f"Unknown SAM model: '{model_type}'. "
+                f"Available models: {', '.join(self.sam_models)}"
+            )
+        
+        # Load model if needed (using instance variable to track model type)
+        if self._sam_predictor is None or self._sam_model_type != model_type:
             # Note: Model checkpoint path needs to be configured
             checkpoint_path = get_resource_path(f"models/sam_{model_type}.pth")
+            
+            # Validate checkpoint file exists before attempting to load
+            if not os.path.exists(checkpoint_path):
+                raise FileNotFoundError(
+                    f"SAM model checkpoint not found at: {checkpoint_path}\n\n"
+                    f"Please download the '{model_type}' checkpoint from:\n"
+                    f"https://github.com/facebookresearch/segment-anything#model-checkpoints\n\n"
+                    f"Save it as: {checkpoint_path}"
+                )
+            
             sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
             if self.gpu_available:
                 sam.to(device='cuda')
             self._sam_predictor = SamPredictor(sam)
+            self._sam_model_type = model_type
+        
+        # Determine if we have a 3D/4D image
+        is_volumetric = image.ndim >= 3 and (
+            (image.ndim == 3 and image.shape[0] > 3) or  # (Z, Y, X) with Z > 3
+            image.ndim == 4  # (Z, C, Y, X)
+        )
+        
+        if is_volumetric and process_3d_per_slice:
+            # Process each Z-slice independently
+            masks, info = self._segment_sam_3d_per_slice(
+                image, model_type, automatic, start_time
+            )
+        else:
+            # Standard 2D processing (or middle slice of 3D)
+            masks, info = self._segment_sam_2d(
+                image, model_type, points, boxes, automatic, start_time, is_volumetric
+            )
+        
+        return masks, info
+    
+    def _segment_sam_2d(self,
+                        image: np.ndarray,
+                        model_type: str,
+                        points: Optional[np.ndarray],
+                        boxes: Optional[np.ndarray],
+                        automatic: bool,
+                        start_time: float,
+                        is_volumetric: bool) -> Tuple[np.ndarray, Dict]:
+        """Helper method for 2D SAM segmentation"""
+        from segment_anything import SamAutomaticMaskGenerator
+        import time
         
         # Prepare image (SAM expects RGB)
         img_rgb = self._prepare_image_for_sam(image)
@@ -200,6 +362,12 @@ class SegmentationEngine:
             median_area = 0.0
             cv_area = 0.0
         
+        # Add warning if volumetric data was processed as single slice
+        note = None
+        if is_volumetric:
+            note = ("SAM is a 2D model. Only the middle Z-slice was processed. "
+                   "Set process_3d_per_slice=True to segment each slice independently.")
+        
         info = {
             'model_name': f'SAM_{model_type}',
             'automatic': automatic,
@@ -209,7 +377,104 @@ class SegmentationEngine:
             'processing_time': end_time - start_time,
         }
         
+        if note:
+            info['note'] = note
+        
         return masks, info
+    
+    def _segment_sam_3d_per_slice(self,
+                                   image: np.ndarray,
+                                   model_type: str,
+                                   automatic: bool,
+                                   start_time: float) -> Tuple[np.ndarray, Dict]:
+        """
+        Process 3D/4D image with SAM slice-by-slice
+        
+        Args:
+            image: 3D (Z, Y, X) or 4D (Z, C, Y, X) image array
+            model_type: SAM model type
+            automatic: Whether to use automatic mask generation
+            start_time: Start time for timing
+            
+        Returns:
+            tuple: (3D masks, info_dict)
+        """
+        from segment_anything import SamAutomaticMaskGenerator
+        import time
+        
+        # Determine Z dimension and prepare slices
+        if image.ndim == 4:
+            # (Z, C, Y, X) - take first channel for each slice
+            n_slices = image.shape[0]
+            slices = [image[z, 0] for z in range(n_slices)]  # Use first channel
+            output_shape = (n_slices, image.shape[2], image.shape[3])
+        else:
+            # (Z, Y, X)
+            n_slices = image.shape[0]
+            slices = [image[z] for z in range(n_slices)]
+            output_shape = image.shape
+        
+        # Initialize 3D mask array
+        masks_3d = np.zeros(output_shape, dtype=np.int32)
+        
+        # Track statistics across slices
+        all_areas = []
+        total_nuclei = 0
+        current_max_label = 0
+        
+        for z_idx, slice_2d in enumerate(slices):
+            # Prepare slice for SAM
+            img_rgb = self._prepare_image_for_sam(slice_2d)
+            
+            self._sam_predictor.set_image(img_rgb)
+            
+            if automatic:
+                mask_generator = SamAutomaticMaskGenerator(self._sam_predictor.model)
+                masks_list = mask_generator.generate(img_rgb)
+                slice_masks = self._combine_sam_masks(masks_list, img_rgb.shape[:2])
+            else:
+                # For per-slice automatic processing, we don't support prompts
+                slice_masks = np.zeros(img_rgb.shape[:2], dtype=np.int32)
+            
+            # Relabel to ensure unique labels across slices
+            if slice_masks.max() > 0:
+                # Offset labels to be unique across all slices
+                slice_masks_offset = np.where(
+                    slice_masks > 0,
+                    slice_masks + current_max_label,
+                    0
+                )
+                current_max_label = slice_masks_offset.max()
+                masks_3d[z_idx] = slice_masks_offset
+                
+                # Collect areas
+                for label in np.unique(slice_masks):
+                    if label > 0:
+                        all_areas.append(np.sum(slice_masks == label))
+                        total_nuclei += 1
+        
+        end_time = time.time()
+        
+        # Calculate statistics
+        if all_areas:
+            median_area = float(np.median(all_areas))
+            cv_area = float(np.std(all_areas) / np.mean(all_areas) * 100) if np.mean(all_areas) > 0 else 0.0
+        else:
+            median_area = 0.0
+            cv_area = 0.0
+        
+        info = {
+            'model_name': f'SAM_{model_type}',
+            'automatic': automatic,
+            'nucleus_count': total_nuclei,
+            'median_area': median_area,
+            'cv_area': cv_area,
+            'processing_time': end_time - start_time,
+            'n_slices_processed': n_slices,
+            'note': f'Processed {n_slices} slices independently. Labels are unique per slice.'
+        }
+        
+        return masks_3d, info
     
     def _prepare_image_for_cellpose(self, image: np.ndarray, do_3d: bool = False) -> np.ndarray:
         """Prepare image for Cellpose (expects channels-last or grayscale)"""

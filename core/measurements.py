@@ -15,7 +15,16 @@ class MeasurementEngine:
     Extract morphometric and intensity measurements from segmented nuclei
     """
     
-    def __init__(self):
+    def __init__(self, pixel_size: Optional[Tuple[float, ...]] = None):
+        """
+        Initialize MeasurementEngine
+        
+        Args:
+            pixel_size: Tuple of pixel dimensions in physical units (e.g., micrometers).
+                       For 2D: (pixel_size_y, pixel_size_x) or (pixel_size,) for isotropic
+                       For 3D: (pixel_size_z, pixel_size_y, pixel_size_x)
+                       If None, measurements are in pixels/voxels
+        """
         self.measurement_categories = {
             'basic_shape': ['area', 'perimeter', 'circularity', 'equivalent_diameter'],
             'advanced_morphology': ['eccentricity', 'solidity', 'major_axis_length', 
@@ -27,13 +36,18 @@ class MeasurementEngine:
         
         self.enabled_categories = set(self.measurement_categories.keys())
         self.is_3d = False
+        self.pixel_size = pixel_size
+        self._pixel_area = None  # Computed based on dimensionality
+        self._pixel_volume = None
+        self._pixel_length = None  # For linear measurements
     
     def extract_measurements(self,
                             masks: np.ndarray,
                             intensity_images: Optional[Dict[str, np.ndarray]] = None,
                             is_3d: bool = False,
                             dna_channel: Optional[str] = None,
-                            assign_phases: bool = False) -> pd.DataFrame:
+                            assign_phases: bool = False,
+                            pixel_size: Optional[Tuple[float, ...]] = None) -> pd.DataFrame:
         """
         Extract all enabled measurements from segmented masks
         
@@ -43,11 +57,21 @@ class MeasurementEngine:
             is_3d: Whether to compute 3D measurements
             dna_channel: Name of DNA channel for cell cycle analysis
             assign_phases: Whether to assign cell cycle phases
+            pixel_size: Override pixel size for this extraction.
+                       For 2D: (pixel_size_y, pixel_size_x) or (pixel_size,) for isotropic
+                       For 3D: (pixel_size_z, pixel_size_y, pixel_size_x)
         
         Returns:
             DataFrame with measurements for each nucleus
         """
         self.is_3d = is_3d
+        
+        # Update pixel size if provided
+        if pixel_size is not None:
+            self.pixel_size = pixel_size
+        
+        # Compute scaling factors based on pixel size and dimensionality
+        self._compute_scaling_factors(is_3d)
         
         # Initialize results
         measurements = []
@@ -97,20 +121,63 @@ class MeasurementEngine:
         return df
     
     def _measure_basic_shape(self, region) -> Dict[str, float]:
-        """Measure basic shape properties"""
+        """Measure basic shape properties with optional physical unit scaling"""
         measurements = {}
+        
+        # Get scaling factors (default to 1.0 if not set)
+        pixel_area = self._pixel_area if self._pixel_area else 1.0
+        pixel_volume = self._pixel_volume if self._pixel_volume else 1.0
+        pixel_length = self._pixel_length if self._pixel_length else 1.0
         
         if self.is_3d:
             # 3D measurements
-            measurements['volume'] = float(region.area)  # In 3D, area is volume
+            volume_voxels = float(region.area)  # In 3D, area is volume in voxels
+            measurements['volume'] = volume_voxels * pixel_volume
             
-            # Surface area approximation
-            # For now, use bbox surface area as approximation
-            bbox = region.bbox
-            dx = bbox[3] - bbox[0]
-            dy = bbox[4] - bbox[1]
-            dz = bbox[5] - bbox[2]
-            measurements['surface_area'] = float(2 * (dx*dy + dy*dz + dz*dx))
+            # Surface area using marching cubes approximation if scipy available
+            try:
+                from skimage.measure import marching_cubes, mesh_surface_area
+                
+                # Get the binary mask for this region
+                binary_mask = region.image.astype(np.uint8)
+                if binary_mask.sum() > 10:  # Need enough voxels for marching cubes
+                    # Pad the mask to ensure closed surface
+                    padded = np.pad(binary_mask, 1, mode='constant', constant_values=0)
+                    try:
+                        verts, faces, _, _ = marching_cubes(padded, level=0.5)
+                        
+                        # Scale vertices by pixel size if anisotropic
+                        if self.pixel_size is not None and len(self.pixel_size) >= 3:
+                            verts[:, 0] *= self.pixel_size[0]  # Z
+                            verts[:, 1] *= self.pixel_size[1]  # Y  
+                            verts[:, 2] *= self.pixel_size[2]  # X
+                        elif self.pixel_size is not None and len(self.pixel_size) == 1:
+                            verts *= self.pixel_size[0]
+                        
+                        surface_area = mesh_surface_area(verts, faces)
+                        measurements['surface_area'] = float(surface_area)
+                    except (RuntimeError, ValueError):
+                        # Fallback to bounding box approximation
+                        bbox = region.bbox
+                        dx = (bbox[3] - bbox[0]) * (self.pixel_size[0] if self.pixel_size and len(self.pixel_size) >= 3 else pixel_length)
+                        dy = (bbox[4] - bbox[1]) * (self.pixel_size[1] if self.pixel_size and len(self.pixel_size) >= 3 else pixel_length)
+                        dz = (bbox[5] - bbox[2]) * (self.pixel_size[2] if self.pixel_size and len(self.pixel_size) >= 3 else pixel_length)
+                        measurements['surface_area'] = float(2 * (dx*dy + dy*dz + dz*dx))
+                else:
+                    # Very small object - use bbox approximation
+                    bbox = region.bbox
+                    dx = (bbox[3] - bbox[0]) * pixel_length
+                    dy = (bbox[4] - bbox[1]) * pixel_length
+                    dz = (bbox[5] - bbox[2]) * pixel_length
+                    measurements['surface_area'] = float(2 * (dx*dy + dy*dz + dz*dx))
+                    
+            except ImportError:
+                # Fallback: bbox surface area approximation
+                bbox = region.bbox
+                dx = (bbox[3] - bbox[0]) * pixel_length
+                dy = (bbox[4] - bbox[1]) * pixel_length
+                dz = (bbox[5] - bbox[2]) * pixel_length
+                measurements['surface_area'] = float(2 * (dx*dy + dy*dz + dz*dx))
             
             # Sphericity (how sphere-like the object is)
             if measurements['surface_area'] > 0:
@@ -125,12 +192,22 @@ class MeasurementEngine:
             measurements['equivalent_diameter'] = float(
                 2 * (3 * measurements['volume'] / (4 * np.pi)) ** (1/3)
             )
+            
+            # Surface-to-volume ratio
+            if measurements['volume'] > 0:
+                measurements['surface_to_volume_ratio'] = float(
+                    measurements['surface_area'] / measurements['volume']
+                )
+            else:
+                measurements['surface_to_volume_ratio'] = 0.0
+                
         else:
             # 2D measurements
-            measurements['area'] = float(region.area)
-            measurements['perimeter'] = float(region.perimeter)
+            area_pixels = float(region.area)
+            measurements['area'] = area_pixels * pixel_area
+            measurements['perimeter'] = float(region.perimeter) * pixel_length
             
-            # Circularity (4π*area/perimeter²)
+            # Circularity (4π*area/perimeter²) - dimensionless
             if region.perimeter > 0:
                 measurements['circularity'] = float(
                     4 * np.pi * region.area / (region.perimeter ** 2)
@@ -138,7 +215,7 @@ class MeasurementEngine:
             else:
                 measurements['circularity'] = 0.0
             
-            measurements['equivalent_diameter'] = float(region.equivalent_diameter)
+            measurements['equivalent_diameter'] = float(region.equivalent_diameter) * pixel_length
         
         return measurements
     
@@ -146,26 +223,103 @@ class MeasurementEngine:
         """Measure advanced morphological features"""
         measurements = {}
         
-        # These work for both 2D and 3D
-        measurements['eccentricity'] = float(region.eccentricity)
-        measurements['solidity'] = float(region.solidity)
-        measurements['major_axis_length'] = float(region.major_axis_length)
-        measurements['minor_axis_length'] = float(region.minor_axis_length)
-        
-        # Aspect ratio
-        if region.minor_axis_length > 0:
-            measurements['aspect_ratio'] = float(
-                region.major_axis_length / region.minor_axis_length
-            )
+        if self.is_3d:
+            # 3D measurements - some properties are not available or meaningful in 3D
+            # Use try/except to safely access properties that may not exist
+            try:
+                # Solidity works for both 2D and 3D
+                measurements['solidity'] = float(region.solidity)
+            except (AttributeError, ValueError):
+                measurements['solidity'] = 0.0
+            
+            # For 3D, compute axis lengths from inertia tensor if available
+            try:
+                # In 3D, major/minor axis lengths come from the moments
+                if hasattr(region, 'inertia_tensor_eigvals'):
+                    eigvals = region.inertia_tensor_eigvals
+                    if len(eigvals) >= 3:
+                        # Principal axis lengths approximation from eigenvalues
+                        sorted_eigvals = sorted(eigvals, reverse=True)
+                        # Convert moments to approximate axis lengths
+                        measurements['major_axis_length'] = float(np.sqrt(sorted_eigvals[0]) * 4)
+                        measurements['minor_axis_length'] = float(np.sqrt(sorted_eigvals[-1]) * 4)
+                        measurements['intermediate_axis_length'] = float(np.sqrt(sorted_eigvals[1]) * 4)
+                    else:
+                        measurements['major_axis_length'] = 0.0
+                        measurements['minor_axis_length'] = 0.0
+                        measurements['intermediate_axis_length'] = 0.0
+                else:
+                    measurements['major_axis_length'] = 0.0
+                    measurements['minor_axis_length'] = 0.0
+                    measurements['intermediate_axis_length'] = 0.0
+            except (AttributeError, ValueError, TypeError):
+                measurements['major_axis_length'] = 0.0
+                measurements['minor_axis_length'] = 0.0
+                measurements['intermediate_axis_length'] = 0.0
+            
+            # Aspect ratio for 3D (major/minor)
+            if measurements['minor_axis_length'] > 0:
+                measurements['aspect_ratio'] = float(
+                    measurements['major_axis_length'] / measurements['minor_axis_length']
+                )
+            else:
+                measurements['aspect_ratio'] = 0.0
+            
+            # Extent works for both 2D and 3D
+            try:
+                measurements['extent'] = float(region.extent)
+            except (AttributeError, ValueError):
+                measurements['extent'] = 0.0
+            
+            # Eccentricity is not directly available for 3D in skimage
+            # We can approximate using axis ratios
+            if measurements['major_axis_length'] > 0:
+                ratio = measurements['minor_axis_length'] / measurements['major_axis_length']
+                measurements['eccentricity'] = float(np.sqrt(1 - ratio**2))
+            else:
+                measurements['eccentricity'] = 0.0
+                
         else:
-            measurements['aspect_ratio'] = 0.0
-        
-        # Orientation (2D only)
-        if not self.is_3d:
-            measurements['orientation'] = float(region.orientation)
-        
-        # Extent (area/bbox_area)
-        measurements['extent'] = float(region.extent)
+            # 2D measurements - these work reliably for 2D
+            try:
+                measurements['eccentricity'] = float(region.eccentricity)
+            except (AttributeError, ValueError):
+                measurements['eccentricity'] = 0.0
+                
+            try:
+                measurements['solidity'] = float(region.solidity)
+            except (AttributeError, ValueError):
+                measurements['solidity'] = 0.0
+                
+            try:
+                measurements['major_axis_length'] = float(region.major_axis_length)
+            except (AttributeError, ValueError):
+                measurements['major_axis_length'] = 0.0
+                
+            try:
+                measurements['minor_axis_length'] = float(region.minor_axis_length)
+            except (AttributeError, ValueError):
+                measurements['minor_axis_length'] = 0.0
+            
+            # Aspect ratio
+            if measurements['minor_axis_length'] > 0:
+                measurements['aspect_ratio'] = float(
+                    measurements['major_axis_length'] / measurements['minor_axis_length']
+                )
+            else:
+                measurements['aspect_ratio'] = 0.0
+            
+            # Orientation (2D only)
+            try:
+                measurements['orientation'] = float(region.orientation)
+            except (AttributeError, ValueError):
+                measurements['orientation'] = 0.0
+            
+            # Extent (area/bbox_area)
+            try:
+                measurements['extent'] = float(region.extent)
+            except (AttributeError, ValueError):
+                measurements['extent'] = 0.0
         
         return measurements
     
@@ -274,6 +428,91 @@ class MeasurementEngine:
     def set_enabled_categories(self, categories: List[str]):
         """Enable specific measurement categories"""
         self.enabled_categories = set(categories)
+    
+    def set_pixel_size(self, pixel_size: Optional[Tuple[float, ...]]):
+        """
+        Set pixel size for physical unit conversions
+        
+        Args:
+            pixel_size: Tuple of pixel dimensions in physical units.
+                       For 2D: (pixel_size_y, pixel_size_x) or (pixel_size,) for isotropic
+                       For 3D: (pixel_size_z, pixel_size_y, pixel_size_x)
+                       If None, measurements are in pixels/voxels
+        """
+        self.pixel_size = pixel_size
+    
+    def _compute_scaling_factors(self, is_3d: bool):
+        """
+        Compute scaling factors for converting pixels to physical units
+        
+        Args:
+            is_3d: Whether 3D scaling is needed
+        """
+        if self.pixel_size is None:
+            # No scaling - measurements in pixels/voxels
+            self._pixel_area = 1.0
+            self._pixel_volume = 1.0
+            self._pixel_length = 1.0
+            return
+        
+        ps = self.pixel_size
+        
+        if is_3d:
+            if len(ps) == 1:
+                # Isotropic 3D
+                self._pixel_volume = ps[0] ** 3
+                self._pixel_area = ps[0] ** 2  # For surface area
+                self._pixel_length = ps[0]
+            elif len(ps) >= 3:
+                # Anisotropic 3D: (z, y, x)
+                self._pixel_volume = ps[0] * ps[1] * ps[2]
+                self._pixel_area = ps[1] * ps[2]  # XY area for surface approximation
+                self._pixel_length = (ps[1] + ps[2]) / 2  # Average XY for linear
+            else:
+                # Fallback: treat as 2D with Z=1
+                self._pixel_volume = ps[0] * ps[1] if len(ps) == 2 else ps[0]
+                self._pixel_area = ps[0] * ps[1] if len(ps) == 2 else ps[0] ** 2
+                self._pixel_length = ps[0]
+        else:
+            if len(ps) == 1:
+                # Isotropic 2D
+                self._pixel_area = ps[0] ** 2
+                self._pixel_length = ps[0]
+            elif len(ps) >= 2:
+                # Anisotropic 2D: (y, x)
+                self._pixel_area = ps[0] * ps[1]
+                self._pixel_length = (ps[0] + ps[1]) / 2
+            else:
+                self._pixel_area = 1.0
+                self._pixel_length = 1.0
+            self._pixel_volume = 1.0  # Not used for 2D
+    
+    def get_measurement_units(self) -> Dict[str, str]:
+        """
+        Get units for each measurement based on pixel_size
+        
+        Returns:
+            Dict mapping measurement name to unit string
+        """
+        if self.pixel_size is None:
+            area_unit = "pixels²" if not self.is_3d else "voxels"
+            length_unit = "pixels"
+            volume_unit = "voxels"
+        else:
+            # Assume pixel_size is in micrometers (most common)
+            area_unit = "µm²"
+            length_unit = "µm"
+            volume_unit = "µm³"
+        
+        return {
+            'area': area_unit,
+            'perimeter': length_unit,
+            'equivalent_diameter': length_unit,
+            'volume': volume_unit,
+            'surface_area': area_unit,
+            'major_axis_length': length_unit,
+            'minor_axis_length': length_unit,
+        }
     
     def get_available_categories(self) -> Dict[str, List[str]]:
         """Get dictionary of available measurement categories"""

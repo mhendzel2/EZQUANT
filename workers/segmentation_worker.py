@@ -255,9 +255,6 @@ class BatchSegmentationWorker(QThread):
     
     def _segment_cellpose(self, engine, image) -> Tuple[np.ndarray, Dict]:
         """Segment with Cellpose"""
-        import time
-        start = time.time()
-        
         # Extract parameters
         model_name = self.parameters.get('model_name', 'nuclei')
         diameter = self.parameters.get('diameter')
@@ -266,8 +263,8 @@ class BatchSegmentationWorker(QThread):
         do_3d = self.parameters.get('do_3d', False)
         channels = self.parameters.get('channels', [0, 0])
         
-        # Run segmentation
-        masks = engine.segment_cellpose(
+        # Run segmentation - properly unpack the (masks, info) tuple
+        masks, info = engine.segment_cellpose(
             image=image,
             model_name=model_name,
             diameter=diameter,
@@ -277,49 +274,24 @@ class BatchSegmentationWorker(QThread):
             channels=channels
         )
         
-        # Calculate statistics
-        nucleus_count = np.max(masks)
-        areas = []
-        for nucleus_id in range(1, nucleus_count + 1):
-            area = np.sum(masks == nucleus_id)
-            areas.append(area)
-        
-        median_area = np.median(areas) if areas else 0
-        cv_area = (np.std(areas) / np.mean(areas) * 100) if areas and np.mean(areas) > 0 else 0
-        
-        info = {
-            'model_name': model_name,
-            'nucleus_count': int(nucleus_count),
-            'median_area': float(median_area),
-            'cv_area': float(cv_area),
-            'processing_time': time.time() - start,
-            'diameter': diameter
-        }
-        
+        # Return the masks and info from the engine directly
+        # This ensures consistency between single and batch segmentation
         return masks, info
     
     def _segment_sam(self, engine, image) -> Tuple[np.ndarray, Dict]:
         """Segment with SAM"""
-        import time
-        start = time.time()
-        
         model_type = self.parameters.get('model_type', 'vit_h')
         automatic = self.parameters.get('automatic', True)
         
-        masks = engine.segment_sam(
+        # Run segmentation - properly unpack the (masks, info) tuple
+        masks, info = engine.segment_sam(
             image=image,
             model_type=model_type,
             automatic=automatic
         )
         
-        nucleus_count = np.max(masks)
-        
-        info = {
-            'model_name': f'SAM ({model_type})',
-            'nucleus_count': int(nucleus_count),
-            'processing_time': time.time() - start
-        }
-        
+        # Return the masks and info from the engine directly
+        # This ensures consistency between single and batch segmentation
         return masks, info
     
     def cancel(self):
