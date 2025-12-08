@@ -445,7 +445,7 @@ class MainWindow(QMainWindow):
                 if self.project_panel.get_image_count() > 0 and self.current_image_index is None:
                     self.project_panel.set_selected_index(len(self.project.images) - added_count)
     
-    def _import_single_image(self, filepath: str, group: str = "Default"):
+    def _import_single_image(self, filepath: str, group: str = "Default", update_view: bool = True):
         """Import a single TIFF image"""
         try:
             # Load image
@@ -466,17 +466,19 @@ class MainWindow(QMainWindow):
             
             # Add to project
             img_index = self.project.add_image(img_data)
-            self.current_image_index = img_index
             
-            # Display in viewer
-            self.image_viewer.set_image(image, metadata)
-            self.segmentation_panel.set_image(image, metadata)
-            
-            self.image_loaded.emit(img_index)
-            self.statusBar().showMessage(
-                f"Imported: {img_data.filename} "
-                f"({img_data.shape}, {img_data.bit_depth}-bit)", 3000
-            )
+            if update_view:
+                self.current_image_index = img_index
+                
+                # Display in viewer
+                self.image_viewer.set_image(image, metadata)
+                self.segmentation_panel.set_image(image, metadata)
+                
+                self.image_loaded.emit(img_index)
+                self.statusBar().showMessage(
+                    f"Imported: {img_data.filename} "
+                    f"({img_data.shape}, {img_data.bit_depth}-bit)", 3000
+                )
             
         except Exception as e:
             QMessageBox.critical(
@@ -1501,7 +1503,7 @@ class MainWindow(QMainWindow):
                 elif str_path.lower().endswith('.lif'):
                     self._import_lif(str_path) # TODO: Add group support to LIF
                 else:
-                    self._import_single_image(str_path, group=group)
+                    self._import_single_image(str_path, group=group, update_view=False)
                 
                 count += 1
             except Exception as e:
@@ -1510,4 +1512,20 @@ class MainWindow(QMainWindow):
             progress.setValue(i + 1)
             
         progress.close()
+        
+        # Load the last imported image into view if any
+        if count > 0 and self.project and len(self.project.images) > 0:
+            last_idx = len(self.project.images) - 1
+            img_data = self.project.get_image(last_idx)
+            if img_data:
+                try:
+                    image, metadata = TIFFLoader.load_tiff(img_data.path)
+                    self.current_image_index = last_idx
+                    self.image_viewer.set_image(image, metadata)
+                    self.segmentation_panel.set_image(image, metadata)
+                    self.image_loaded.emit(last_idx)
+                except Exception as e:
+                    print(f"Error loading last image: {e}")
+
+        self.statusBar().showMessage(f"Imported {count} files from folder", 5000)
         self.statusBar().showMessage(f"Imported {count} files from folder", 5000)
