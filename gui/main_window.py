@@ -5,7 +5,7 @@ Main window for the Nuclei Segmentation Application
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QMenuBar, QMenu, QToolBar, QStatusBar,
                                QFileDialog, QMessageBox, QDockWidget, QLabel,
-                               QSplitter, QInputDialog, QProgressDialog, QDialogButtonBox)
+                               QSplitter, QInputDialog, QProgressDialog, QDialogButtonBox, QApplication)
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from pathlib import Path
@@ -1479,6 +1479,7 @@ class MainWindow(QMainWindow):
         progress = QProgressDialog("Importing images...", "Cancel", 0, len(files_to_import), self)
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
+        progress.show() # Ensure dialog is shown
         
         count = 0
         for i, filepath in enumerate(files_to_import):
@@ -1486,6 +1487,7 @@ class MainWindow(QMainWindow):
                 break
                 
             progress.setLabelText(f"Importing {filepath.name}...")
+            QApplication.processEvents() # Keep UI responsive
             
             try:
                 str_path = str(filepath)
