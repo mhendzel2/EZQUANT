@@ -7,6 +7,7 @@ from typing import Dict, Tuple, Optional, List
 import torch
 import sys
 import os
+from core.segmentation_backend import get_segmenter_backend, SegmentationBackend
 
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
@@ -32,7 +33,87 @@ class SegmentationEngine:
         # Available models
         self.cellpose_models = ['nuclei', 'cyto', 'cyto2', 'cyto3', 'cyto_sam']
         self.sam_models = ['vit_h', 'vit_l', 'vit_b']
-    
+        
+        # Allen Segmenter Backend
+        self._allen_backend = None
+
+    def segment_allen(self,
+                      image: np.ndarray,
+                      mode: str = 'auto',
+                      structure_id: Optional[str] = None,
+                      workflow_id: Optional[str] = None,
+                      config: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
+        """
+        Perform segmentation using Allen Cell & Structure Segmenter
+        
+        Args:
+            image: Image array (Z, Y, X) or (C, Z, Y, X)
+            mode: 'classic', 'ml', or 'auto'
+            structure_id: Structure ID (e.g., 'LAMP1', 'DNA')
+            workflow_id: Workflow ID (for ML models)
+            config: Configuration dictionary
+            
+        Returns:
+            tuple: (masks, info_dict)
+        """
+        import time
+        start_time = time.time()
+        
+        if self._allen_backend is None:
+            # We re-create backend if mode changes? 
+            # The factory returns a backend instance. 
+            # We can just call the factory every time or cache it.
+            # Since mode can change, let's get it every time or cache by mode.
+            # For simplicity, let's get it here.
+            pass
+
+        backend = get_segmenter_backend(mode)
+        
+        # Run segmentation
+        masks = backend.segment(
+            volume=image,
+            structure_id=structure_id,
+            workflow_id=workflow_id,
+            config=config
+        )
+        
+        end_time = time.time()
+        
+        # Calculate basic stats
+        unique_labels = np.unique(masks)
+        object_count = len(unique_labels) - 1 if 0 in unique_labels else len(unique_labels)
+        
+        # Get versions
+        versions = {}
+        try:
+            import aicssegmentation
+            versions['aicssegmentation'] = aicssegmentation.__version__
+        except ImportError:
+            pass
+            
+        try:
+            import aicsmlsegment
+            versions['aicsmlsegment'] = aicsmlsegment.__version__
+        except ImportError:
+            pass
+            
+        try:
+            import torch
+            versions['torch'] = torch.__version__
+        except ImportError:
+            pass
+
+        info = {
+            'backend': mode,
+            'structure_id': structure_id,
+            'workflow_id': workflow_id,
+            'object_count': object_count,
+            'processing_time': end_time - start_time,
+            'versions': versions
+        }
+        
+        return masks, info
+
     def segment_cellpose(self,
                         image: np.ndarray,
                         model_name: str = 'nuclei',

@@ -37,3 +37,7 @@ openpyxl>=3.1.0
 
 # Other utilities
 Pillow>=10.0.0
+
+aicssegmentation>=0.5.2
+aicsmlsegment>=0.0.7
+segmenter_model_zoo
