@@ -17,6 +17,7 @@ class AnalysisPanel(QWidget):
     """Panel for measurement configuration and execution"""
     
     run_measurements = Signal(dict)  # Emit configuration dict
+    refresh_plugins_requested = Signal()  # Signal to request plugin refresh
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -159,15 +160,10 @@ class AnalysisPanel(QWidget):
         main_layout.addWidget(splitter)
     
     def _refresh_plugins(self):
-        """Refresh plugin list"""
-        # This would call plugin loader to reload
-        # For now, placeholder
-        from PySide6.QtWidgets import QMessageBox
-        QMessageBox.information(
-            self,
-            "Refresh Plugins",
-            "Plugin refresh functionality will be connected to PluginLoader"
-        )
+        """Refresh plugin list from PluginLoader"""
+        # Emit signal to main window to reload plugins
+        # The main window will call set_plugin_info after reloading
+        self.refresh_plugins_requested.emit()
     
     def set_plugin_info(self, plugins: List[Dict]):
         """Set available plugins"""

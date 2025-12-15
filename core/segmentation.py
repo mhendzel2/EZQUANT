@@ -4,6 +4,7 @@ Core segmentation module wrapping Cellpose and SAM APIs
 
 import numpy as np
 from typing import Dict, Tuple, Optional, List
+from functools import lru_cache
 import torch
 import sys
 import os
@@ -13,6 +14,32 @@ def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
+
+
+# Module-level cache for Allen backend instances
+_allen_backend_cache: Dict[str, SegmentationBackend] = {}
+
+
+def get_cached_allen_backend(mode: str) -> SegmentationBackend:
+    """
+    Get a cached Allen segmenter backend instance.
+    Caching reduces initialization overhead for repeated segmentation calls.
+    
+    Args:
+        mode: 'classic', 'ml', or 'auto'
+        
+    Returns:
+        Cached SegmentationBackend instance
+    """
+    if mode not in _allen_backend_cache:
+        _allen_backend_cache[mode] = get_segmenter_backend(mode)
+    return _allen_backend_cache[mode]
+
+
+def clear_allen_backend_cache():
+    """Clear the Allen backend cache to free memory"""
+    global _allen_backend_cache
+    _allen_backend_cache.clear()
 
 
 class SegmentationEngine:
@@ -34,8 +61,8 @@ class SegmentationEngine:
         self.cellpose_models = ['nuclei', 'cyto', 'cyto2', 'cyto3', 'cyto_sam']
         self.sam_models = ['vit_h', 'vit_l', 'vit_b']
         
-        # Allen Segmenter Backend
-        self._allen_backend = None
+        # Allen Segmenter Backend (cached)
+        self._allen_backend_mode = None
 
     def segment_allen(self,
                       image: np.ndarray,
@@ -45,6 +72,9 @@ class SegmentationEngine:
                       config: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
         """
         Perform segmentation using Allen Cell & Structure Segmenter
+        
+        Uses caching to avoid reinitializing the backend for repeated calls
+        with the same mode, significantly improving throughput.
         
         Args:
             image: Image array (Z, Y, X) or (C, Z, Y, X)
@@ -59,15 +89,8 @@ class SegmentationEngine:
         import time
         start_time = time.time()
         
-        if self._allen_backend is None:
-            # We re-create backend if mode changes? 
-            # The factory returns a backend instance. 
-            # We can just call the factory every time or cache it.
-            # Since mode can change, let's get it every time or cache by mode.
-            # For simplicity, let's get it here.
-            pass
-
-        backend = get_segmenter_backend(mode)
+        # Use cached backend for better throughput
+        backend = get_cached_allen_backend(mode)
         
         # Run segmentation
         masks = backend.segment(

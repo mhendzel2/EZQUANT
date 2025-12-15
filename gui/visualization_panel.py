@@ -439,19 +439,233 @@ class VisualizationPanel(QWidget):
         return html
     
     def _export_plot(self, format: str):
-        """Export current plot"""
-        # This would trigger a file save dialog and export
-        # Placeholder for now
-        from PySide6.QtWidgets import QMessageBox
-        QMessageBox.information(
+        """Export current plot to file"""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        
+        if self.measurements_df is None or len(self.measurements_df) == 0:
+            QMessageBox.warning(self, "No Data", "No plot data to export.")
+            return
+        
+        # Get current plot figure
+        fig = self._get_current_figure()
+        if fig is None:
+            QMessageBox.warning(self, "No Plot", "No plot available to export.")
+            return
+        
+        # File dialog
+        if format == "png":
+            file_filter = "PNG Images (*.png)"
+            default_name = "plot.png"
+        elif format == "svg":
+            file_filter = "SVG Files (*.svg)"
+            default_name = "plot.svg"
+        else:  # html
+            file_filter = "HTML Files (*.html)"
+            default_name = "plot.html"
+        
+        filepath, _ = QFileDialog.getSaveFileName(
             self,
-            "Export",
-            f"Export to {format.upper()} not yet implemented.\n"
-            f"Use browser right-click -> Save Image for now."
+            f"Export Plot as {format.upper()}",
+            default_name,
+            file_filter
         )
+        
+        if not filepath:
+            return
+        
+        try:
+            if format == "html":
+                fig.write_html(filepath, include_plotlyjs='cdn')
+            else:
+                # For PNG/SVG, we need kaleido or orca
+                try:
+                    fig.write_image(filepath, format=format, scale=2)
+                except Exception as img_error:
+                    # Fallback: save as HTML and inform user
+                    html_path = filepath.rsplit('.', 1)[0] + '.html'
+                    fig.write_html(html_path, include_plotlyjs='cdn')
+                    QMessageBox.warning(
+                        self,
+                        "Export Partial",
+                        f"Image export requires 'kaleido' package.\n"
+                        f"Install with: pip install kaleido\n\n"
+                        f"Plot saved as HTML instead:\n{html_path}"
+                    )
+                    return
+            
+            QMessageBox.information(
+                self,
+                "Export Successful",
+                f"Plot exported to:\n{filepath}"
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Could not export plot:\n{str(e)}"
+            )
+    
+    def _get_current_figure(self):
+        """Recreate the current plot figure for export"""
+        if self.measurements_df is None:
+            return None
+        
+        plot_type = self.plot_type_combo.currentText()
+        df = self.measurements_df
+        
+        # Recreate figure based on current plot type
+        if plot_type == "DNA Histogram":
+            return self._create_dna_histogram_figure()
+        elif plot_type == "Scatter: Area vs DNA":
+            return self._create_area_dna_scatter_figure()
+        elif plot_type == "Box Plots: Morphology":
+            return self._create_morphology_boxplots_figure()
+        elif plot_type == "Scatter Matrix":
+            return self._create_scatter_matrix_figure()
+        elif plot_type == "Correlation Heatmap":
+            return self._create_correlation_heatmap_figure()
+        elif plot_type == "Phase Distribution":
+            return self._create_phase_distribution_figure()
+        
+        return None
+    
+    def _create_dna_histogram_figure(self):
+        """Create DNA histogram figure for export"""
+        df = self.measurements_df
+        dna_col = self._find_dna_column()
+        if dna_col is None:
+            return None
+        
+        fig = go.Figure()
+        if 'phase' in df.columns:
+            for phase in df['phase'].unique():
+                phase_data = df[df['phase'] == phase][dna_col]
+                fig.add_trace(go.Histogram(x=phase_data, name=phase, opacity=0.7, nbinsx=50))
+        else:
+            fig.add_trace(go.Histogram(x=df[dna_col], nbinsx=50, marker_color='lightblue', opacity=0.7))
+        
+        fig.update_layout(title="DNA Intensity Distribution", xaxis_title=dna_col, yaxis_title="Count", height=500)
+        return fig
+    
+    def _create_area_dna_scatter_figure(self):
+        """Create area vs DNA scatter figure for export"""
+        df = self.measurements_df
+        area_col = 'area' if 'area' in df.columns else 'volume'
+        dna_col = self._find_dna_column()
+        if dna_col is None:
+            return None
+        
+        color = 'phase' if 'phase' in df.columns else None
+        fig = px.scatter(df, x=area_col, y=dna_col, color=color, hover_data=['nucleus_id'] if 'nucleus_id' in df.columns else None)
+        fig.update_layout(height=500)
+        return fig
+    
+    def _create_morphology_boxplots_figure(self):
+        """Create morphology boxplots figure for export"""
+        df = self.measurements_df
+        morph_cols = [col for col in ['area', 'perimeter', 'circularity', 'eccentricity', 'solidity', 'aspect_ratio'] if col in df.columns]
+        if not morph_cols:
+            return None
+        
+        n_cols = min(3, len(morph_cols))
+        n_rows = (len(morph_cols) + n_cols - 1) // n_cols
+        fig = make_subplots(rows=n_rows, cols=n_cols, subplot_titles=morph_cols)
+        
+        for i, col in enumerate(morph_cols):
+            row = i // n_cols + 1
+            col_idx = i % n_cols + 1
+            fig.add_trace(go.Box(y=df[col], name=col), row=row, col=col_idx)
+        
+        fig.update_layout(title="Morphology Distributions", showlegend=False, height=300 * n_rows)
+        return fig
+    
+    def _create_scatter_matrix_figure(self):
+        """Create scatter matrix figure for export"""
+        df = self.measurements_df
+        key_cols = [col for col in ['area', 'circularity', 'eccentricity'] if col in df.columns]
+        dna_col = self._find_dna_column()
+        if dna_col:
+            key_cols.append(dna_col)
+        
+        if len(key_cols) < 2:
+            return None
+        
+        color = 'phase' if 'phase' in df.columns else None
+        fig = px.scatter_matrix(df, dimensions=key_cols, color=color)
+        fig.update_traces(diagonal_visible=False, showupperhalf=False)
+        fig.update_layout(height=800)
+        return fig
+    
+    def _create_correlation_heatmap_figure(self):
+        """Create correlation heatmap figure for export"""
+        df = self.measurements_df
+        numeric_df = df.select_dtypes(include=[np.number])
+        if 'nucleus_id' in numeric_df.columns:
+            numeric_df = numeric_df.drop('nucleus_id', axis=1)
+        
+        corr = numeric_df.corr()
+        fig = go.Figure(data=go.Heatmap(z=corr.values, x=corr.columns, y=corr.columns, colorscale='RdBu', zmid=0))
+        fig.update_layout(title="Correlation Heatmap", height=600, width=600)
+        return fig
+    
+    def _create_phase_distribution_figure(self):
+        """Create phase distribution figure for export"""
+        df = self.measurements_df
+        if 'phase' not in df.columns:
+            return None
+        
+        phase_counts = df['phase'].value_counts()
+        fig = go.Figure(data=[go.Bar(x=phase_counts.index, y=phase_counts.values)])
+        fig.update_layout(title="Cell Cycle Phase Distribution", xaxis_title="Phase", yaxis_title="Count", height=400)
+        return fig
+    
+    def _find_dna_column(self):
+        """Find DNA intensity column in measurements"""
+        df = self.measurements_df
+        for col in df.columns:
+            if 'dna' in col.lower() and 'intensity' in col.lower():
+                return col
+        intensity_cols = [col for col in df.columns if 'mean_intensity' in col.lower()]
+        return intensity_cols[0] if intensity_cols else None
     
     def highlight_nucleus(self, nucleus_id: int):
         """Highlight a specific nucleus in the plot"""
         self.selected_nucleus_id = nucleus_id
-        # Would update plot to highlight the selected nucleus
-        # This requires re-rendering with modified marker sizes/colors
+        
+        if self.measurements_df is None or len(self.measurements_df) == 0:
+            return
+        
+        # Recreate plot with highlighted nucleus
+        fig = self._get_current_figure()
+        if fig is None:
+            return
+        
+        # Find the nucleus in the data
+        if 'nucleus_id' in self.measurements_df.columns:
+            nucleus_row = self.measurements_df[self.measurements_df['nucleus_id'] == nucleus_id]
+            if len(nucleus_row) > 0:
+                # Add a marker for the selected nucleus
+                # Get x and y values based on current plot type
+                plot_type = self.plot_type_combo.currentText()
+                
+                if plot_type == "Scatter: Area vs DNA":
+                    area_col = 'area' if 'area' in self.measurements_df.columns else 'volume'
+                    dna_col = self._find_dna_column()
+                    
+                    if dna_col and area_col in nucleus_row.columns:
+                        x_val = nucleus_row[area_col].values[0]
+                        y_val = nucleus_row[dna_col].values[0]
+                        
+                        # Add highlight marker
+                        fig.add_trace(go.Scatter(
+                            x=[x_val],
+                            y=[y_val],
+                            mode='markers',
+                            marker=dict(size=20, color='red', symbol='circle-open', line=dict(width=3)),
+                            name=f'Selected (ID: {nucleus_id})',
+                            showlegend=True
+                        ))
+        
+        # Update plot
+        html = self._add_plotly_callbacks(fig)
+        self.plot_view.setHtml(html)

@@ -165,6 +165,7 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.analysis_panel.run_measurements.connect(self._on_run_measurements)
         self.analysis_panel.manage_plugins_btn.clicked.connect(self.show_plugin_manager)
+        self.analysis_panel.refresh_plugins_requested.connect(self._on_refresh_plugins)
         
         return self.analysis_panel
     
@@ -373,6 +374,11 @@ class MainWindow(QMainWindow):
         
         try:
             self.project.save()
+            self.dirty = False
+            # Remove unsaved indicator from title
+            title = self.windowTitle()
+            if title.endswith(' *'):
+                self.setWindowTitle(title[:-2])
             self.statusBar().showMessage(
                 f"Project saved: {self.project.project_path}", 3000
             )
@@ -970,8 +976,11 @@ class MainWindow(QMainWindow):
             
             # Load existing segmentation if available
             if img_data.current_segmentation_id is not None:
-                # TODO: Load segmentation from project
-                pass
+                self._load_segmentation_mask(img_data)
+            else:
+                # Clear any previous masks
+                self.current_masks = None
+                self.image_viewer.clear_mask()
             
             self.image_loaded.emit(index)
             self.statusBar().showMessage(
@@ -984,6 +993,38 @@ class MainWindow(QMainWindow):
                 "Error Loading Image",
                 f"Could not load image:\n{str(e)}"
             )
+    
+    def _load_segmentation_mask(self, img_data):
+        """Load segmentation mask from saved file"""
+        try:
+            # Check if mask path is stored
+            mask_path = getattr(img_data, 'mask_path', None)
+            
+            if mask_path is None and self.project and self.project.project_path:
+                # Try to find mask file based on naming convention
+                from pathlib import Path
+                project_dir = Path(self.project.project_path).parent
+                masks_dir = project_dir / "masks"
+                mask_filename = f"{Path(img_data.filename).stem}_mask.npz"
+                potential_path = masks_dir / mask_filename
+                
+                if potential_path.exists():
+                    mask_path = str(potential_path)
+            
+            if mask_path and Path(mask_path).exists():
+                data = np.load(mask_path)
+                self.current_masks = data['masks']
+                self.image_viewer.set_mask(self.current_masks)
+                self.statusBar().showMessage(
+                    f"Loaded existing segmentation for {img_data.filename}", 3000
+                )
+            else:
+                # No mask file found
+                self.current_masks = None
+                
+        except Exception as e:
+            print(f"Warning: Could not load mask file: {e}")
+            self.current_masks = None
     
     def _on_remove_image(self, index: int):
         """Remove image from project"""
@@ -1173,6 +1214,17 @@ class MainWindow(QMainWindow):
             
             self.statusBar().showMessage("Plugins reloaded", 3000)
     
+    def _on_refresh_plugins(self):
+        """Handle plugin refresh request from analysis panel"""
+        # Reload plugins
+        count = self.plugin_loader.reload_plugins()
+        
+        # Update analysis panel with new plugins
+        plugin_info = self.plugin_loader.get_all_plugin_info()
+        self.analysis_panel.set_plugin_info(plugin_info)
+        
+        self.statusBar().showMessage(f"Reloaded {count} plugins", 3000)
+    
     def show_settings(self):
         """Show settings dialog"""
         dialog = SettingsDialog(self)
@@ -1250,8 +1302,32 @@ class MainWindow(QMainWindow):
         Check if there are unsaved changes and prompt user
         Returns True if action should be cancelled
         """
-        # TODO: Implement proper change tracking
-        return False
+        if not self.dirty:
+            return False
+        
+        reply = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "You have unsaved changes.\nDo you want to save before continuing?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.save_project()
+            return False  # Continue with action
+        elif reply == QMessageBox.No:
+            return False  # Discard changes, continue with action
+        else:
+            return True  # Cancel the action
+    
+    def _mark_dirty(self):
+        """Mark the project as having unsaved changes"""
+        self.dirty = True
+        # Update window title to indicate unsaved changes
+        title = self.windowTitle()
+        if not title.endswith('*'):
+            self.setWindowTitle(title + ' *')
     
     def _on_run_segmentation(self, parameters: Dict):
         """Handle segmentation run request"""
@@ -1298,20 +1374,50 @@ class MainWindow(QMainWindow):
             img_data = self.project.get_image(self.current_image_index)
             if img_data:
                 # Add to segmentation history
-                import datetime
                 seg_record = {
                     'timestamp': datetime.datetime.now().isoformat(),
                     'parameters': params,
                     'results': results
                 }
                 img_data.segmentation_history.append(seg_record)
+                img_data.current_segmentation_id = len(img_data.segmentation_history) - 1
                 
                 # Mark as segmented in project panel
                 self.project_panel.set_image_segmented(self.current_image_index, True)
                 
-                # TODO: Store mask data (need to handle large arrays)
+                # Mark project as dirty (unsaved changes)
+                self._mark_dirty()
+                
+                # Persist mask data to project directory
+                self._save_segmentation_mask(img_data, masks)
         
         self.statusBar().showMessage("Segmentation complete - Ready for analysis", 5000)
+    
+    def _save_segmentation_mask(self, img_data, masks: np.ndarray):
+        """Save segmentation mask to project directory"""
+        if not self.project or not self.project.project_path:
+            return
+        
+        try:
+            from pathlib import Path
+            
+            # Create masks directory in project folder
+            project_dir = Path(self.project.project_path).parent
+            masks_dir = project_dir / "masks"
+            masks_dir.mkdir(exist_ok=True)
+            
+            # Generate mask filename based on image
+            mask_filename = f"{Path(img_data.filename).stem}_mask.npz"
+            mask_path = masks_dir / mask_filename
+            
+            # Save mask as compressed numpy array
+            np.savez_compressed(str(mask_path), masks=masks)
+            
+            # Store mask path in image data for later retrieval
+            if not hasattr(img_data, 'mask_path'):
+                img_data.mask_path = str(mask_path)
+        except Exception as e:
+            print(f"Warning: Could not save mask file: {e}")
     
     def _on_segmentation_error(self, error_message: str):
         """Handle segmentation error"""
