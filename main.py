@@ -5,6 +5,7 @@ Main entry point for the desktop application
 
 import sys
 import os
+import json
 from pathlib import Path
 
 # Add project root to path
@@ -16,6 +17,32 @@ from PySide6.QtCore import Qt
 import torch
 
 from gui.main_window import MainWindow
+
+
+# Configuration file path for persistent settings
+CONFIG_PATH = Path.home() / ".ezquant_config.json"
+
+
+def load_config() -> dict:
+    """Load application configuration from persistent file"""
+    try:
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Warning: Could not load config file: {e}")
+    return {}
+
+
+def save_config(cfg: dict) -> bool:
+    """Save application configuration to persistent file"""
+    try:
+        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, indent=2)
+        return True
+    except IOError as e:
+        print(f"Warning: Could not save config file: {e}")
+        return False
 
 
 def check_gpu_availability():
@@ -68,6 +95,9 @@ def main():
     app.setApplicationName("Nuclei Segmentation & Analysis")
     app.setOrganizationName("NucleiSegApp")
     
+    # Load persistent configuration
+    cfg = load_config()
+    
     # Check GPU availability
     gpu_available, gpu_info = check_gpu_availability()
     
@@ -75,9 +105,14 @@ def main():
     window = MainWindow(gpu_available=gpu_available, gpu_info=gpu_info)
     window.show()
     
-    # Show GPU dialog on first run (can be disabled in settings)
-    # TODO: Check if first run from settings
-    show_gpu_dialog(gpu_available, gpu_info)
+    # Show GPU dialog only on first run (controlled by persistent config)
+    if cfg.get('show_gpu_dialog', True):
+        show_gpu_dialog(gpu_available, gpu_info)
+        # Update config to not show dialog again
+        cfg['show_gpu_dialog'] = False
+        cfg['gpu_enabled'] = gpu_available
+        cfg['first_run_date'] = str(Path(__file__).stat().st_mtime)
+        save_config(cfg)
     
     sys.exit(app.exec())
 
