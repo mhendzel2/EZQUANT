@@ -104,9 +104,12 @@ class QualityDashboard(QWidget):
         self._update_display()
     
     def refresh_data(self):
-        """Signal to refresh data from project"""
-        # This would be connected to main window to reload project data
-        pass
+        """Signal to refresh data from project - emits to main window"""
+        # This signal is connected by the main window to trigger data refresh
+        # The actual refresh logic is in the main window's _refresh_dashboard_data method
+        # For standalone use, we can also re-run update display with existing data
+        if self.project_data:
+            self._update_display()
     
     def _update_display(self):
         """Update all dashboard components"""

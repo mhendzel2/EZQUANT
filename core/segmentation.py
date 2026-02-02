@@ -4,14 +4,42 @@ Core segmentation module wrapping Cellpose and SAM APIs
 
 import numpy as np
 from typing import Dict, Tuple, Optional, List
+from functools import lru_cache
 import torch
 import sys
 import os
+from core.segmentation_backend import get_segmenter_backend, SegmentationBackend
 
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
+
+
+# Module-level cache for Allen backend instances
+_allen_backend_cache: Dict[str, SegmentationBackend] = {}
+
+
+def get_cached_allen_backend(mode: str) -> SegmentationBackend:
+    """
+    Get a cached Allen segmenter backend instance.
+    Caching reduces initialization overhead for repeated segmentation calls.
+    
+    Args:
+        mode: 'classic', 'ml', or 'auto'
+        
+    Returns:
+        Cached SegmentationBackend instance
+    """
+    if mode not in _allen_backend_cache:
+        _allen_backend_cache[mode] = get_segmenter_backend(mode)
+    return _allen_backend_cache[mode]
+
+
+def clear_allen_backend_cache():
+    """Clear the Allen backend cache to free memory"""
+    global _allen_backend_cache
+    _allen_backend_cache.clear()
 
 
 class SegmentationEngine:
@@ -32,7 +60,83 @@ class SegmentationEngine:
         # Available models
         self.cellpose_models = ['nuclei', 'cyto', 'cyto2', 'cyto3', 'cyto_sam']
         self.sam_models = ['vit_h', 'vit_l', 'vit_b']
-    
+        
+        # Allen Segmenter Backend (cached)
+        self._allen_backend_mode = None
+
+    def segment_allen(self,
+                      image: np.ndarray,
+                      mode: str = 'auto',
+                      structure_id: Optional[str] = None,
+                      workflow_id: Optional[str] = None,
+                      config: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
+        """
+        Perform segmentation using Allen Cell & Structure Segmenter
+        
+        Uses caching to avoid reinitializing the backend for repeated calls
+        with the same mode, significantly improving throughput.
+        
+        Args:
+            image: Image array (Z, Y, X) or (C, Z, Y, X)
+            mode: 'classic', 'ml', or 'auto'
+            structure_id: Structure ID (e.g., 'LAMP1', 'DNA')
+            workflow_id: Workflow ID (for ML models)
+            config: Configuration dictionary
+            
+        Returns:
+            tuple: (masks, info_dict)
+        """
+        import time
+        start_time = time.time()
+        
+        # Use cached backend for better throughput
+        backend = get_cached_allen_backend(mode)
+        
+        # Run segmentation
+        masks = backend.segment(
+            volume=image,
+            structure_id=structure_id,
+            workflow_id=workflow_id,
+            config=config
+        )
+        
+        end_time = time.time()
+        
+        # Calculate basic stats
+        unique_labels = np.unique(masks)
+        object_count = len(unique_labels) - 1 if 0 in unique_labels else len(unique_labels)
+        
+        # Get versions
+        versions = {}
+        try:
+            import aicssegmentation
+            versions['aicssegmentation'] = aicssegmentation.__version__
+        except ImportError:
+            pass
+            
+        try:
+            import aicsmlsegment
+            versions['aicsmlsegment'] = aicsmlsegment.__version__
+        except ImportError:
+            pass
+            
+        try:
+            import torch
+            versions['torch'] = torch.__version__
+        except ImportError:
+            pass
+
+        info = {
+            'backend': mode,
+            'structure_id': structure_id,
+            'workflow_id': workflow_id,
+            'object_count': object_count,
+            'processing_time': end_time - start_time,
+            'versions': versions
+        }
+        
+        return masks, info
+
     def segment_cellpose(self,
                         image: np.ndarray,
                         model_name: str = 'nuclei',

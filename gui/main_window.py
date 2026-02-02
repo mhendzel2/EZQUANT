@@ -44,9 +44,15 @@ class MainWindow(QMainWindow):
         self.project: Optional[Project] = None
         self.current_image_index: Optional[int] = None
         
+        # Dirty flag for tracking unsaved changes
+        self.dirty = False
+        
         # Plugin loader
         self.plugin_loader = PluginLoader()
         self.plugin_loader.load_all_plugins()
+        
+        # Quality dashboard reference
+        self.quality_dashboard = None
         
         # Current measurements
         self.current_measurements: Optional[pd.DataFrame] = None
@@ -159,6 +165,7 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.analysis_panel.run_measurements.connect(self._on_run_measurements)
         self.analysis_panel.manage_plugins_btn.clicked.connect(self.show_plugin_manager)
+        self.analysis_panel.refresh_plugins_requested.connect(self._on_refresh_plugins)
         
         return self.analysis_panel
     
@@ -367,6 +374,11 @@ class MainWindow(QMainWindow):
         
         try:
             self.project.save()
+            self.dirty = False
+            # Remove unsaved indicator from title
+            title = self.windowTitle()
+            if title.endswith(' *'):
+                self.setWindowTitle(title[:-2])
             self.statusBar().showMessage(
                 f"Project saved: {self.project.project_path}", 3000
             )
@@ -964,8 +976,11 @@ class MainWindow(QMainWindow):
             
             # Load existing segmentation if available
             if img_data.current_segmentation_id is not None:
-                # TODO: Load segmentation from project
-                pass
+                self._load_segmentation_mask(img_data)
+            else:
+                # Clear any previous masks
+                self.current_masks = None
+                self.image_viewer.clear_mask()
             
             self.image_loaded.emit(index)
             self.statusBar().showMessage(
@@ -978,6 +993,38 @@ class MainWindow(QMainWindow):
                 "Error Loading Image",
                 f"Could not load image:\n{str(e)}"
             )
+    
+    def _load_segmentation_mask(self, img_data):
+        """Load segmentation mask from saved file"""
+        try:
+            # Check if mask path is stored
+            mask_path = getattr(img_data, 'mask_path', None)
+            
+            if mask_path is None and self.project and self.project.project_path:
+                # Try to find mask file based on naming convention
+                from pathlib import Path
+                project_dir = Path(self.project.project_path).parent
+                masks_dir = project_dir / "masks"
+                mask_filename = f"{Path(img_data.filename).stem}_mask.npz"
+                potential_path = masks_dir / mask_filename
+                
+                if potential_path.exists():
+                    mask_path = str(potential_path)
+            
+            if mask_path and Path(mask_path).exists():
+                data = np.load(mask_path)
+                self.current_masks = data['masks']
+                self.image_viewer.set_mask(self.current_masks)
+                self.statusBar().showMessage(
+                    f"Loaded existing segmentation for {img_data.filename}", 3000
+                )
+            else:
+                # No mask file found
+                self.current_masks = None
+                
+        except Exception as e:
+            print(f"Warning: Could not load mask file: {e}")
+            self.current_masks = None
     
     def _on_remove_image(self, index: int):
         """Remove image from project"""
@@ -997,36 +1044,186 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Image removed from project", 2000)
     
     def export_measurements(self):
-        """Export measurements to file"""
-        QMessageBox.information(
+        """Export measurements to file (CSV or Excel)"""
+        if not self.project:
+            QMessageBox.warning(self, "No Project", "Please create or open a project first.")
+            return
+        
+        # Get aggregated measurements from project
+        measurements_df = self.project.get_aggregated_measurements()
+        
+        if measurements_df is None or len(measurements_df) == 0:
+            QMessageBox.warning(
+                self,
+                "No Measurements",
+                "No measurements available to export.\n"
+                "Please run segmentation and analysis first."
+            )
+            return
+        
+        # Open file dialog for save location
+        filepath, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Export Measurements",
-            "Export functionality will be implemented soon."
+            "measurements.csv",
+            "CSV Files (*.csv);;Excel Files (*.xlsx);;All Files (*)"
         )
-    
+        
+        if not filepath:
+            return
+        
+        try:
+            if filepath.endswith('.xlsx') or 'Excel' in selected_filter:
+                if not filepath.endswith('.xlsx'):
+                    filepath += '.xlsx'
+                measurements_df.to_excel(filepath, index=False, engine='openpyxl')
+            else:
+                if not filepath.endswith('.csv'):
+                    filepath += '.csv'
+                measurements_df.to_csv(filepath, index=False)
+            
+            QMessageBox.information(
+                self,
+                "Export Successful",
+                f"Measurements exported to:\n{filepath}\n\n"
+                f"Total rows: {len(measurements_df)}\n"
+                f"Columns: {len(measurements_df.columns)}"
+            )
+            self.statusBar().showMessage(f"Exported measurements to {filepath}", 5000)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Could not export measurements:\n{str(e)}"
+            )
+
     def batch_process(self):
-        """Batch process multiple images"""
-        QMessageBox.information(
-            self,
-            "Batch Processing",
-            "Batch processing functionality will be implemented soon."
-        )
-    
+        """Launch batch processing dialog"""
+        from gui.batch_processing import BatchProcessingDialog
+        
+        dialog = BatchProcessingDialog(self)
+        
+        # Pre-populate with project images if available
+        if self.project and len(self.project.images) > 0:
+            file_paths = [img.path for img in self.project.images]
+            dialog.file_paths = file_paths
+            dialog._update_file_list()
+        
+        if dialog.exec():
+            # Get results and update project
+            results = dialog.get_results()
+            if results:
+                self.dirty = True
+                self.statusBar().showMessage(
+                    f"Batch processing complete: {len(results)} images processed", 5000
+                )
+
     def show_quality_dashboard(self):
-        """Show quality metrics dashboard"""
-        QMessageBox.information(
-            self,
-            "Quality Dashboard",
-            "Quality dashboard will be implemented soon."
-        )
+        """Show quality metrics dashboard in a new tab"""
+        from gui.quality_dashboard import QualityDashboard
+        
+        # Check if dashboard tab already exists
+        for i in range(self.tab_widget.count()):
+            if self.tab_widget.tabText(i) == "Dashboard":
+                self.tab_widget.setCurrentIndex(i)
+                # Refresh data
+                if self.quality_dashboard:
+                    self._refresh_dashboard_data()
+                return
+        
+        # Create new dashboard tab
+        self.quality_dashboard = QualityDashboard()
+        self.quality_dashboard.image_selected.connect(self._on_dashboard_image_selected)
+        
+        self.tab_widget.addTab(self.quality_dashboard, "Dashboard")
+        self.tab_widget.setCurrentWidget(self.quality_dashboard)
+        
+        # Populate with project data
+        self._refresh_dashboard_data()
     
+    def _refresh_dashboard_data(self):
+        """Refresh quality dashboard with current project data"""
+        if not self.quality_dashboard or not self.project:
+            return
+        
+        project_data = []
+        for img_data in self.project.images:
+            # Compile QC metrics for each image
+            data_entry = {
+                'image_name': img_data.filename,
+                'n_nuclei': 0,
+                'mean_area': 0.0,
+                'cv_area': 0.0,
+                'mean_dna_intensity': 0.0,
+                'cv_dna_intensity': 0.0,
+                'flagged_count': len(img_data.qc_flags),
+                'flagged_percentage': 0.0,
+                'qc_pass': True,
+                'timestamp': img_data.added_date
+            }
+            
+            # If measurements exist, compute stats
+            if img_data.measurements_df is not None:
+                df = pd.DataFrame(img_data.measurements_df) if isinstance(img_data.measurements_df, dict) else img_data.measurements_df
+                if len(df) > 0:
+                    data_entry['n_nuclei'] = len(df)
+                    
+                    if 'area' in df.columns:
+                        data_entry['mean_area'] = df['area'].mean()
+                        data_entry['cv_area'] = (df['area'].std() / df['area'].mean() * 100) if df['area'].mean() > 0 else 0
+                    
+                    # Find DNA intensity column
+                    dna_cols = [c for c in df.columns if 'dna' in c.lower() and 'intensity' in c.lower()]
+                    if dna_cols:
+                        dna_col = dna_cols[0]
+                        data_entry['mean_dna_intensity'] = df[dna_col].mean()
+                        data_entry['cv_dna_intensity'] = (df[dna_col].std() / df[dna_col].mean() * 100) if df[dna_col].mean() > 0 else 0
+                    
+                    data_entry['flagged_percentage'] = (data_entry['flagged_count'] / data_entry['n_nuclei'] * 100) if data_entry['n_nuclei'] > 0 else 0
+                    data_entry['qc_pass'] = data_entry['flagged_percentage'] < 10
+            
+            project_data.append(data_entry)
+        
+        self.quality_dashboard.set_project_data(project_data)
+    
+    def _on_dashboard_image_selected(self, image_name: str):
+        """Handle image selection from dashboard"""
+        if not self.project:
+            return
+        
+        # Find image index by name
+        for i, img_data in enumerate(self.project.images):
+            if img_data.filename == image_name:
+                self.project_panel.set_selected_index(i)
+                self._on_project_image_selected(i)
+                self.tab_widget.setCurrentIndex(0)  # Switch to segmentation tab
+                break
+
     def show_plugin_manager(self):
         """Show plugin manager dialog"""
-        QMessageBox.information(
-            self,
-            "Plugin Manager",
-            "Plugin manager will be implemented soon."
-        )
+        from gui.plugin_manager_dialog import PluginManagerDialog
+        
+        dialog = PluginManagerDialog(self.plugin_loader, self)
+        if dialog.exec():
+            # Reload plugins if changes were made
+            self.plugin_loader.reload_plugins()
+            
+            # Update analysis panel with new plugins
+            plugin_info = self.plugin_loader.get_all_plugin_info()
+            self.analysis_panel.set_plugin_info(plugin_info)
+            
+            self.statusBar().showMessage("Plugins reloaded", 3000)
+    
+    def _on_refresh_plugins(self):
+        """Handle plugin refresh request from analysis panel"""
+        # Reload plugins
+        count = self.plugin_loader.reload_plugins()
+        
+        # Update analysis panel with new plugins
+        plugin_info = self.plugin_loader.get_all_plugin_info()
+        self.analysis_panel.set_plugin_info(plugin_info)
+        
+        self.statusBar().showMessage(f"Reloaded {count} plugins", 3000)
     
     def show_settings(self):
         """Show settings dialog"""
@@ -1057,13 +1254,30 @@ class MainWindow(QMainWindow):
             self.analysis_panel.set_plugin_info(plugin_info)
     
     def show_help(self):
-        """Show documentation"""
-        QMessageBox.information(
-            self,
-            "Documentation",
-            "Documentation will be available soon.\n\n"
-            "For now, please refer to README.md"
-        )
+        """Show documentation in default browser"""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        
+        # Check for local documentation first
+        docs_path = Path(__file__).parent.parent / "docs" / "QUICK_START.md"
+        readme_path = Path(__file__).parent.parent / "README.md"
+        
+        if docs_path.exists():
+            # Open local documentation
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(docs_path)))
+            self.statusBar().showMessage("Opening documentation...", 3000)
+        elif readme_path.exists():
+            # Fallback to README
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(readme_path)))
+            self.statusBar().showMessage("Opening README...", 3000)
+        else:
+            QMessageBox.information(
+                self,
+                "Documentation",
+                "Documentation files not found.\n\n"
+                "For help, please visit the project repository or\n"
+                "refer to the included documentation files."
+            )
     
     def show_about(self):
         """Show about dialog"""
@@ -1088,8 +1302,32 @@ class MainWindow(QMainWindow):
         Check if there are unsaved changes and prompt user
         Returns True if action should be cancelled
         """
-        # TODO: Implement proper change tracking
-        return False
+        if not self.dirty:
+            return False
+        
+        reply = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "You have unsaved changes.\nDo you want to save before continuing?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.save_project()
+            return False  # Continue with action
+        elif reply == QMessageBox.No:
+            return False  # Discard changes, continue with action
+        else:
+            return True  # Cancel the action
+    
+    def _mark_dirty(self):
+        """Mark the project as having unsaved changes"""
+        self.dirty = True
+        # Update window title to indicate unsaved changes
+        title = self.windowTitle()
+        if not title.endswith('*'):
+            self.setWindowTitle(title + ' *')
     
     def _on_run_segmentation(self, parameters: Dict):
         """Handle segmentation run request"""
@@ -1136,20 +1374,50 @@ class MainWindow(QMainWindow):
             img_data = self.project.get_image(self.current_image_index)
             if img_data:
                 # Add to segmentation history
-                import datetime
                 seg_record = {
                     'timestamp': datetime.datetime.now().isoformat(),
                     'parameters': params,
                     'results': results
                 }
                 img_data.segmentation_history.append(seg_record)
+                img_data.current_segmentation_id = len(img_data.segmentation_history) - 1
                 
                 # Mark as segmented in project panel
                 self.project_panel.set_image_segmented(self.current_image_index, True)
                 
-                # TODO: Store mask data (need to handle large arrays)
+                # Mark project as dirty (unsaved changes)
+                self._mark_dirty()
+                
+                # Persist mask data to project directory
+                self._save_segmentation_mask(img_data, masks)
         
         self.statusBar().showMessage("Segmentation complete - Ready for analysis", 5000)
+    
+    def _save_segmentation_mask(self, img_data, masks: np.ndarray):
+        """Save segmentation mask to project directory"""
+        if not self.project or not self.project.project_path:
+            return
+        
+        try:
+            from pathlib import Path
+            
+            # Create masks directory in project folder
+            project_dir = Path(self.project.project_path).parent
+            masks_dir = project_dir / "masks"
+            masks_dir.mkdir(exist_ok=True)
+            
+            # Generate mask filename based on image
+            mask_filename = f"{Path(img_data.filename).stem}_mask.npz"
+            mask_path = masks_dir / mask_filename
+            
+            # Save mask as compressed numpy array
+            np.savez_compressed(str(mask_path), masks=masks)
+            
+            # Store mask path in image data for later retrieval
+            if not hasattr(img_data, 'mask_path'):
+                img_data.mask_path = str(mask_path)
+        except Exception as e:
+            print(f"Warning: Could not save mask file: {e}")
     
     def _on_segmentation_error(self, error_message: str):
         """Handle segmentation error"""

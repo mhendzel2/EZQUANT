@@ -46,6 +46,8 @@ class SegmentationWorker(QThread):
                 self._run_cellpose(engine)
             elif engine_type == 'sam':
                 self._run_sam(engine)
+            elif engine_type == 'allen':
+                self._run_allen(engine)
             else:
                 raise ValueError(f"Unknown engine type: {engine_type}")
             
@@ -71,6 +73,24 @@ class SegmentationWorker(QThread):
         if self._is_cancelled:
             return
         
+        self.status.emit("Segmentation complete!")
+        self.finished.emit(masks, info)
+
+    def _run_allen(self, engine: SegmentationEngine):
+        """Run Allen Segmenter segmentation"""
+        self.status.emit("Running Allen Segmenter...")
+        
+        masks, info = engine.segment_allen(
+            image=self.image,
+            mode=self.parameters.get('mode', 'auto'),
+            structure_id=self.parameters.get('structure_id'),
+            workflow_id=self.parameters.get('workflow_id'),
+            config=self.parameters.get('config')
+        )
+        
+        if self._is_cancelled:
+            return
+            
         self.status.emit("Segmentation complete!")
         self.finished.emit(masks, info)
     

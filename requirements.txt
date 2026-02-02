@@ -32,3 +32,7 @@ zarr>=2.16.0
 
 # Utilities
 pyyaml>=6.0
+
+aicssegmentation>=0.5.2
+aicsmlsegment>=0.0.7
+segmenter_model_zoo
