@@ -326,15 +326,10 @@ class MetamorphNDFile:
         # Load first image to get spatial dimensions
         first_img, first_meta = TIFFLoader.load_tiff(str(files[0]['filepath']))
         
-        # Get Y, X dimensions from first image
-        if first_img.ndim == 3:
-            # (C, Y, X)
-            height, width = first_img.shape[-2:]
-        elif first_img.ndim == 4:
-            # (Z, C, Y, X)
-            height, width = first_img.shape[-2:]
-        else:
-            height, width = first_img.shape
+        # Get Y, X dimensions from first image - always use last two dimensions
+        # After _normalize_dimensions, images are either (C, Y, X) or (Z, C, Y, X)
+        # In both cases, the last two dimensions are (Y, X)
+        height, width = first_img.shape[-2], first_img.shape[-1]
         
         # Initialize output array
         if n_z > 1:
@@ -348,19 +343,45 @@ class MetamorphNDFile:
         for file_info in files:
             img, _ = TIFFLoader.load_tiff(str(file_info['filepath']))
             
-            # Extract single channel (assume each file is single channel)
-            if img.ndim == 3:
-                img = img[0]  # Take first channel
+            # Extract single 2D plane from the loaded image
+            # After TIFFLoader, images are (C, Y, X) or (Z, C, Y, X)
+            if img.ndim == 2:
+                # Already 2D
+                plane = img
+            elif img.ndim == 3:
+                # (C, Y, X) - take first channel
+                plane = img[0]
             elif img.ndim == 4:
-                img = img[0, 0]  # Take first z and first channel
+                # (Z, C, Y, X) - take middle Z slice, first channel
+                z_mid = img.shape[0] // 2
+                plane = img[z_mid, 0]
+            else:
+                # Unexpected, take slice
+                plane = img.reshape(img.shape[-2:])
+            
+            # Verify dimensions match
+            if plane.shape != (height, width):
+                # Try to handle size mismatch by cropping or padding
+                if plane.shape[0] >= height and plane.shape[1] >= width:
+                    # Crop to expected size
+                    plane = plane[:height, :width]
+                else:
+                    # Resize if significantly different
+                    import warnings
+                    warnings.warn(
+                        f"Image size mismatch: expected ({height}, {width}), "
+                        f"got {plane.shape}. Resizing to match."
+                    )
+                    from skimage.transform import resize
+                    plane = resize(plane, (height, width), preserve_range=True).astype(img.dtype)
             
             z_idx = file_info['z']
             w_idx = file_info['wavelength']
             
             if n_z > 1:
-                output[z_idx, w_idx] = img
+                output[z_idx, w_idx] = plane
             else:
-                output[w_idx] = img
+                output[w_idx] = plane
         
         # Build metadata
         metadata = {
