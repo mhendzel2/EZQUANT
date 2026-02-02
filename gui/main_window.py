@@ -1296,10 +1296,14 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Could not load image: {e}")
             return
         
+        # Get current model name from segmentation panel for better diameter estimation
+        model_name = self.segmentation_panel.model_combo.currentText() if hasattr(self.segmentation_panel, 'model_combo') else 'nuclei'
+        
         # Create and start worker
         self.diameter_worker = DiameterEstimationWorker(
             image=image,
-            gpu_available=self.gpu_available
+            gpu_available=self.gpu_available,
+            model_name=model_name
         )
         
         self.diameter_worker.finished.connect(self.segmentation_panel.set_estimated_diameter)
