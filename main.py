@@ -15,6 +15,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt
 import torch
+import PIL.Image
+
+# Disable DecompressionBombError for large images
+PIL.Image.MAX_IMAGE_PIXELS = None
 
 from gui.main_window import MainWindow
 
@@ -90,21 +94,21 @@ def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
-    
+
     app = QApplication(sys.argv)
     app.setApplicationName("Nuclei Segmentation & Analysis")
     app.setOrganizationName("NucleiSegApp")
-    
+
     # Load persistent configuration
     cfg = load_config()
-    
+
     # Check GPU availability
     gpu_available, gpu_info = check_gpu_availability()
-    
+
     # Create and show main window
     window = MainWindow(gpu_available=gpu_available, gpu_info=gpu_info)
     window.show()
-    
+
     # Show GPU dialog only on first run (controlled by persistent config)
     if cfg.get('show_gpu_dialog', True):
         show_gpu_dialog(gpu_available, gpu_info)
@@ -113,7 +117,7 @@ def main():
         cfg['gpu_enabled'] = gpu_available
         cfg['first_run_date'] = str(Path(__file__).stat().st_mtime)
         save_config(cfg)
-    
+
     sys.exit(app.exec())
 
 
