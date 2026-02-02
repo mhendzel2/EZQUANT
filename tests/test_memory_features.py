@@ -30,7 +30,7 @@ class TestMemoryFeatures(unittest.TestCase):
 
         # Mock series to report large size (> 4GB)
         mock_series = MagicMock()
-        mock_series.size = 5 * 1024**3 # 5 billion pixels
+        mock_series.size = 5 * 1024**3 # 5 GB worth of pixels
         mock_series.dtype.itemsize = 1
         mock_series.shape = (100, 100)
         mock_series.axes = 'YX'
