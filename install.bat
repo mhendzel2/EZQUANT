@@ -172,11 +172,25 @@ if errorlevel 1 (
     echo.
     %VENV_PIP% install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ) else (
-    echo NVIDIA GPU detected - installing CUDA-enabled version
+    set GPU_NAME=
+    set USE_NIGHTLY=0
+    for /f "usebackq delims=" %%G in (`nvidia-smi --query-gpu=name --format=csv,noheader 2^>nul`) do (
+        if not defined GPU_NAME set GPU_NAME=%%G
+    )
+    if not defined GPU_NAME set GPU_NAME=Unknown NVIDIA GPU
+
+    echo NVIDIA GPU detected: !GPU_NAME!
+    echo !GPU_NAME! | findstr /I /C:"RTX 50" >nul
+    if not errorlevel 1 set USE_NIGHTLY=1
+
     echo This may take several minutes...
-    echo Note: Using PyTorch Nightly with CUDA 12.4 for RTX 50-series (sm_120) support
-    echo.
-    %VENV_PIP% install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu124
+    if "!USE_NIGHTLY!"=="1" (
+        echo Installing PyTorch Nightly with CUDA 12.4 for RTX 50-series (sm_120) support
+        %VENV_PIP% install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu124
+    ) else (
+        echo Installing stable PyTorch with CUDA 12.4
+        %VENV_PIP% install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+    )
 )
 
 if errorlevel 1 (
@@ -211,7 +225,7 @@ if not exist "%REQUIREMENTS_FILE%" (
 
 set TEMP_REQUIREMENTS=%TEMP%\ezquant_requirements_no_torch_%RANDOM%%RANDOM%.txt
 findstr /V /I /R /C:"^torch" /C:"^torchvision" "%REQUIREMENTS_FILE%" > "%TEMP_REQUIREMENTS%"
-if errorlevel 1 (
+if not exist "%TEMP_REQUIREMENTS%" (
     echo.
     echo ERROR: Failed to prepare requirements list for installation.
     echo.
@@ -220,8 +234,9 @@ if errorlevel 1 (
 )
 
 %VENV_PIP% install -r "%TEMP_REQUIREMENTS%"
+set PIP_INSTALL_RC=%ERRORLEVEL%
 del /q "%TEMP_REQUIREMENTS%" >nul 2>&1
-if errorlevel 1 (
+if not "%PIP_INSTALL_RC%"=="0" (
     echo.
     echo ERROR: Failed to install dependencies
     echo Please check the error messages above.

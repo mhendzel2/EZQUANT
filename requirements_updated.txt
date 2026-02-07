@@ -16,6 +16,12 @@ aicsimageio>=4.14.0  # For VSI, LIF, CZI and other microscopy formats
 bioformats-jar  # Java library for bio-formats (optional, via aicsimageio)
 fsspec>=2023.1.0  # Required by aicsimageio
 
+# Large file handling
+zarr>=2.16.0
+h5py>=3.10.0
+numcodecs>=0.12.0
+dask[array]>=2024.1.0
+
 # Image processing and measurements
 scikit-image>=0.21.0
 opencv-python>=4.8.0
