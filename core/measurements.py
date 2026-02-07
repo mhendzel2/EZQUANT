@@ -102,8 +102,15 @@ class MeasurementEngine:
             
             # Intensity statistics for each channel
             if 'intensity_stats' in self.enabled_categories and intensity_images:
+                # Reuse coordinates to avoid repeated full-image scans per region.
+                region_coords_idx = tuple(region.coords.T)
                 for channel_name, img in intensity_images.items():
-                    channel_stats = self._measure_intensity_stats(region, img, masks)
+                    channel_stats = self._measure_intensity_stats(
+                        region,
+                        img,
+                        masks=masks,
+                        coords_idx=region_coords_idx
+                    )
                     # Prefix with channel name
                     for key, value in channel_stats.items():
                         nucleus_measurements[f"{channel_name}_{key}"] = value
@@ -326,13 +333,26 @@ class MeasurementEngine:
     def _measure_intensity_stats(self,
                                  region,
                                  intensity_image: np.ndarray,
-                                 masks: np.ndarray) -> Dict[str, float]:
+                                 masks: Optional[np.ndarray] = None,
+                                 coords_idx: Optional[Tuple[np.ndarray, ...]] = None) -> Dict[str, float]:
         """Measure intensity statistics within nucleus"""
         measurements = {}
-        
-        # Get intensities within this nucleus
-        mask = (masks == region.label)
-        intensities = intensity_image[mask]
+
+        # Use region coordinates (O(region_size)) instead of full-image boolean
+        # mask construction (O(image_size)) for each nucleus.
+        if coords_idx is None:
+            coords = region.coords
+            coords_idx = tuple(coords.T)
+
+        try:
+            intensities = intensity_image[coords_idx]
+        except Exception:
+            # Fallback for shape mismatch edge cases.
+            if masks is None:
+                intensities = np.array([], dtype=np.float32)
+            else:
+                mask = (masks == region.label)
+                intensities = intensity_image[mask]
         
         if len(intensities) == 0:
             return {

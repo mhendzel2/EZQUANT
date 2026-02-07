@@ -4,7 +4,6 @@ Core segmentation module wrapping Cellpose and SAM APIs
 
 import numpy as np
 from typing import Dict, Tuple, Optional, List
-from functools import lru_cache
 import torch
 import sys
 import os
@@ -50,12 +49,15 @@ class SegmentationEngine:
     def __init__(self, gpu_available: bool = False):
         self.gpu_available = gpu_available
         self.device = 'cuda' if gpu_available else 'cpu'
+        self._configure_torch_runtime()
         
         # Model instances (lazy loaded)
         self._cellpose_model = None
         self._cellpose_model_type = None  # Track currently loaded model type
         self._sam_predictor = None
         self._sam_model_type = None  # Track currently loaded SAM model type
+        self._sam_mask_generator = None  # Cache SAM automatic mask generator
+        self._sam_generator_model_type = None
         
         # Available models
         self.cellpose_models = ['nuclei', 'cyto', 'cyto2', 'cyto3', 'cyto_sam']
@@ -63,6 +65,79 @@ class SegmentationEngine:
         
         # Allen Segmenter Backend (cached)
         self._allen_backend_mode = None
+
+    def _configure_torch_runtime(self):
+        """Configure safe runtime defaults for faster GPU inference."""
+        if not self.gpu_available:
+            return
+
+        try:
+            # cuDNN autotuner improves throughput for repeated conv workloads.
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.benchmark = True
+                if hasattr(torch.backends.cudnn, "allow_tf32"):
+                    torch.backends.cudnn.allow_tf32 = True
+
+            if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+                torch.backends.cuda.matmul.allow_tf32 = True
+
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("high")
+        except Exception:
+            # Performance tuning is best-effort and should never break startup.
+            pass
+
+    @staticmethod
+    def _compute_label_area_stats(labels: np.ndarray) -> Tuple[int, float, float]:
+        """
+        Compute nucleus count, median area, and CV of areas from a labeled mask.
+
+        This avoids repeated per-label full-image scans by using bincount where
+        possible (integer label maps).
+        """
+        if labels is None or labels.size == 0:
+            return 0, 0.0, 0.0
+
+        # Fast path for integer/boolean label maps
+        if labels.dtype.kind in ('b', 'u', 'i'):
+            labels_int = labels.astype(np.int64, copy=False)
+            max_label = int(labels_int.max()) if labels_int.size else 0
+            if max_label <= 0:
+                return 0, 0.0, 0.0
+
+            counts = np.bincount(labels_int.ravel(), minlength=max_label + 1)
+            areas = counts[1:]  # exclude background
+            areas = areas[areas > 0]
+        else:
+            # Fallback for non-integer outputs
+            unique_labels, counts = np.unique(labels, return_counts=True)
+            valid = unique_labels > 0
+            if not np.any(valid):
+                return 0, 0.0, 0.0
+            areas = counts[valid]
+
+        nucleus_count = int(areas.size)
+        if nucleus_count == 0:
+            return 0, 0.0, 0.0
+
+        median_area = float(np.median(areas))
+        mean_area = float(np.mean(areas))
+        cv_area = float(np.std(areas) / mean_area * 100.0) if mean_area > 0 else 0.0
+
+        return nucleus_count, median_area, cv_area
+
+    def _get_sam_mask_generator(self):
+        """Get or create a cached SAM automatic mask generator for current model."""
+        from segment_anything import SamAutomaticMaskGenerator
+
+        if (
+            self._sam_mask_generator is None
+            or self._sam_generator_model_type != self._sam_model_type
+        ):
+            self._sam_mask_generator = SamAutomaticMaskGenerator(self._sam_predictor.model)
+            self._sam_generator_model_type = self._sam_model_type
+
+        return self._sam_mask_generator
 
     def segment_allen(self,
                       image: np.ndarray,
@@ -103,8 +178,7 @@ class SegmentationEngine:
         end_time = time.time()
         
         # Calculate basic stats
-        unique_labels = np.unique(masks)
-        object_count = len(unique_labels) - 1 if 0 in unique_labels else len(unique_labels)
+        object_count, _, _ = self._compute_label_area_stats(masks)
         
         # Get versions
         versions = {}
@@ -247,21 +321,7 @@ class SegmentationEngine:
         end_time = time.time()
         
         # Calculate statistics
-        unique_labels = np.unique(masks)
-        nucleus_count = len(unique_labels) - 1  # Exclude background
-        
-        if nucleus_count > 0:
-            areas = []
-            for label in unique_labels:
-                if label == 0:
-                    continue
-                areas.append(np.sum(masks == label))
-            
-            median_area = float(np.median(areas))
-            cv_area = float(np.std(areas) / np.mean(areas) * 100) if np.mean(areas) > 0 else 0.0
-        else:
-            median_area = 0.0
-            cv_area = 0.0
+        nucleus_count, median_area, cv_area = self._compute_label_area_stats(masks)
         
         info = {
             'model_name': model_name,
@@ -388,6 +448,8 @@ class SegmentationEngine:
                 sam.to(device='cuda')
             self._sam_predictor = SamPredictor(sam)
             self._sam_model_type = model_type
+            self._sam_mask_generator = None
+            self._sam_generator_model_type = None
         
         # Determine if we have a 3D/4D image
         is_volumetric = image.ndim >= 3 and (
@@ -417,7 +479,6 @@ class SegmentationEngine:
                         start_time: float,
                         is_volumetric: bool) -> Tuple[np.ndarray, Dict]:
         """Helper method for 2D SAM segmentation"""
-        from segment_anything import SamAutomaticMaskGenerator
         import time
         
         # Prepare image (SAM expects RGB)
@@ -427,8 +488,7 @@ class SegmentationEngine:
         
         if automatic:
             # Automatic mask generation
-            mask_generator = SamAutomaticMaskGenerator(self._sam_predictor.model)
-            masks_list = mask_generator.generate(img_rgb)
+            masks_list = self._get_sam_mask_generator().generate(img_rgb)
             
             # Convert to labeled mask
             masks = self._combine_sam_masks(masks_list, img_rgb.shape[:2])
@@ -450,21 +510,7 @@ class SegmentationEngine:
         end_time = time.time()
         
         # Calculate statistics
-        unique_labels = np.unique(masks)
-        nucleus_count = len(unique_labels) - 1
-        
-        if nucleus_count > 0:
-            areas = []
-            for label in unique_labels:
-                if label == 0:
-                    continue
-                areas.append(np.sum(masks == label))
-            
-            median_area = float(np.median(areas))
-            cv_area = float(np.std(areas) / np.mean(areas) * 100) if np.mean(areas) > 0 else 0.0
-        else:
-            median_area = 0.0
-            cv_area = 0.0
+        nucleus_count, median_area, cv_area = self._compute_label_area_stats(masks)
         
         # Add warning if volumetric data was processed as single slice
         note = None
@@ -503,19 +549,16 @@ class SegmentationEngine:
         Returns:
             tuple: (3D masks, info_dict)
         """
-        from segment_anything import SamAutomaticMaskGenerator
         import time
         
         # Determine Z dimension and prepare slices
         if image.ndim == 4:
             # (Z, C, Y, X) - take first channel for each slice
             n_slices = image.shape[0]
-            slices = [image[z, 0] for z in range(n_slices)]  # Use first channel
             output_shape = (n_slices, image.shape[2], image.shape[3])
         else:
             # (Z, Y, X)
             n_slices = image.shape[0]
-            slices = [image[z] for z in range(n_slices)]
             output_shape = image.shape
         
         # Initialize 3D mask array
@@ -525,15 +568,21 @@ class SegmentationEngine:
         all_areas = []
         total_nuclei = 0
         current_max_label = 0
+
+        mask_generator = self._get_sam_mask_generator() if automatic else None
         
-        for z_idx, slice_2d in enumerate(slices):
+        for z_idx in range(n_slices):
+            if image.ndim == 4:
+                slice_2d = image[z_idx, 0]
+            else:
+                slice_2d = image[z_idx]
+
             # Prepare slice for SAM
             img_rgb = self._prepare_image_for_sam(slice_2d)
             
             self._sam_predictor.set_image(img_rgb)
             
             if automatic:
-                mask_generator = SamAutomaticMaskGenerator(self._sam_predictor.model)
                 masks_list = mask_generator.generate(img_rgb)
                 slice_masks = self._combine_sam_masks(masks_list, img_rgb.shape[:2])
             else:
@@ -543,26 +592,28 @@ class SegmentationEngine:
             # Relabel to ensure unique labels across slices
             if slice_masks.max() > 0:
                 # Offset labels to be unique across all slices
-                slice_masks_offset = np.where(
-                    slice_masks > 0,
-                    slice_masks + current_max_label,
-                    0
-                )
-                current_max_label = slice_masks_offset.max()
+                slice_masks_offset = slice_masks.astype(np.int32, copy=True)
+                positive = slice_masks_offset > 0
+                slice_masks_offset[positive] += current_max_label
+                current_max_label = int(slice_masks_offset.max())
                 masks_3d[z_idx] = slice_masks_offset
-                
-                # Collect areas
-                for label in np.unique(slice_masks):
-                    if label > 0:
-                        all_areas.append(np.sum(slice_masks == label))
-                        total_nuclei += 1
+
+                # Collect area stats with vectorized counts
+                counts = np.bincount(slice_masks.ravel())
+                slice_areas = counts[1:]
+                slice_areas = slice_areas[slice_areas > 0]
+                if slice_areas.size > 0:
+                    all_areas.extend(slice_areas.tolist())
+                    total_nuclei += int(slice_areas.size)
         
         end_time = time.time()
         
         # Calculate statistics
         if all_areas:
-            median_area = float(np.median(all_areas))
-            cv_area = float(np.std(all_areas) / np.mean(all_areas) * 100) if np.mean(all_areas) > 0 else 0.0
+            areas_arr = np.asarray(all_areas, dtype=np.float64)
+            median_area = float(np.median(areas_arr))
+            mean_area = float(np.mean(areas_arr))
+            cv_area = float(np.std(areas_arr) / mean_area * 100.0) if mean_area > 0 else 0.0
         else:
             median_area = 0.0
             cv_area = 0.0
