@@ -15,6 +15,7 @@ REM   Double-click install.bat or run from command prompt
 REM ============================================================================
 
 setlocal enabledelayedexpansion
+cd /d "%~dp0"
 
 echo.
 echo ========================================================================
@@ -105,6 +106,14 @@ if exist "venv" (
     )
     echo Removing old virtual environment...
     rmdir /s /q venv
+    if exist "venv" (
+        echo.
+        echo ERROR: Failed to remove existing virtual environment.
+        echo Please close any terminal/editor using venv and try again.
+        echo.
+        pause
+        exit /b 1
+    )
 )
 
 REM Create virtual environment with specific Python version
@@ -137,11 +146,13 @@ if errorlevel 1 (
     exit /b 1
 )
 echo Virtual environment activated.
+set VENV_PYTHON=venv\Scripts\python.exe
+set VENV_PIP=%VENV_PYTHON% -m pip
 echo.
 
 REM Upgrade pip
 echo [4/6] Upgrading pip, setuptools, and wheel...
-venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+%VENV_PIP% install --upgrade pip setuptools wheel
 if errorlevel 1 (
     echo.
     echo WARNING: Failed to upgrade pip
@@ -159,13 +170,13 @@ if errorlevel 1 (
     echo No NVIDIA GPU detected - installing CPU-only version
     echo Note: Segmentation will be slower without GPU
     echo.
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    %VENV_PIP% install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ) else (
     echo NVIDIA GPU detected - installing CUDA-enabled version
     echo This may take several minutes...
     echo Note: Using PyTorch Nightly with CUDA 12.4 for RTX 50-series (sm_120) support
     echo.
-    pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu124
+    %VENV_PIP% install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu124
 )
 
 if errorlevel 1 (
@@ -184,15 +195,32 @@ echo [6/6] Installing application dependencies...
 echo This may take 10-15 minutes depending on your connection...
 echo.
 
-if not exist "requirements_updated.txt" (
-    echo ERROR: requirements_updated.txt not found!
-    echo Please make sure you're running this script from the application directory.
+set REQUIREMENTS_FILE=requirements_updated.txt
+if not exist "%REQUIREMENTS_FILE%" (
+    if exist "requirements.txt" (
+        echo WARNING: requirements_updated.txt not found. Using requirements.txt instead.
+        set REQUIREMENTS_FILE=requirements.txt
+    ) else (
+        echo ERROR: No requirements file found.
+        echo Expected requirements_updated.txt or requirements.txt in this folder.
+        echo.
+        pause
+        exit /b 1
+    )
+)
+
+set TEMP_REQUIREMENTS=%TEMP%\ezquant_requirements_no_torch_%RANDOM%%RANDOM%.txt
+findstr /V /I /R /C:"^torch" /C:"^torchvision" "%REQUIREMENTS_FILE%" > "%TEMP_REQUIREMENTS%"
+if errorlevel 1 (
+    echo.
+    echo ERROR: Failed to prepare requirements list for installation.
     echo.
     pause
     exit /b 1
 )
 
-pip install -r requirements_updated.txt
+%VENV_PIP% install -r "%TEMP_REQUIREMENTS%"
+del /q "%TEMP_REQUIREMENTS%" >nul 2>&1
 if errorlevel 1 (
     echo.
     echo ERROR: Failed to install dependencies
