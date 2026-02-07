@@ -159,9 +159,9 @@ class BatchProcessingDialog(QDialog):
         """Add files to batch"""
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "Select TIFF Files",
+            "Select Image Files",
             "",
-            "TIFF Files (*.tif *.tiff);;All Files (*.*)"
+            "Image Files (*.tif *.tiff *.nd *.vsi *.lif);;TIFF Files (*.tif *.tiff);;Metamorph ND Files (*.nd);;Olympus VSI Files (*.vsi);;Leica LIF Files (*.lif);;All Files (*.*)"
         )
         
         if files:
@@ -169,13 +169,19 @@ class BatchProcessingDialog(QDialog):
             self._update_file_list()
     
     def _add_folder(self):
-        """Add all TIFF files from folder"""
+        """Add all supported image files from folder"""
         folder = QFileDialog.getExistingDirectory(self, "Select Folder")
         
         if folder:
             folder_path = Path(folder)
-            tiff_files = list(folder_path.glob("*.tif")) + list(folder_path.glob("*.tiff"))
-            self.file_paths.extend([str(f) for f in tiff_files])
+            image_files = (
+                list(folder_path.glob("*.tif"))
+                + list(folder_path.glob("*.tiff"))
+                + list(folder_path.glob("*.nd"))
+                + list(folder_path.glob("*.vsi"))
+                + list(folder_path.glob("*.lif"))
+            )
+            self.file_paths.extend([str(f) for f in image_files])
             self._update_file_list()
     
     def _clear_files(self):

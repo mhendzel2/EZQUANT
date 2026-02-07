@@ -675,27 +675,60 @@ class SegmentationEngine:
         else:
             return []
     
-    def estimate_diameter(self, image: np.ndarray) -> float:
+    def estimate_diameter(self, image: np.ndarray, model_name: str = 'nuclei') -> float:
         """
-        Estimate cell diameter using Cellpose's size estimation
+        Estimate cell diameter using a quick segmentation pass.
+        
+        In Cellpose 4.0+, the SizeModel (sz) was removed. This method runs
+        a quick segmentation with a default diameter and then calculates
+        the median diameter from the resulting masks.
         
         Args:
             image: Image array
+            model_name: Model type hint ('nuclei' or 'cyto') for default diameter
         
         Returns:
             Estimated diameter in pixels
         """
-        from cellpose import models
+        from cellpose import models, utils
         
+        # Default diameters based on model type (from Cellpose defaults)
+        default_diameters = {
+            'nuclei': 17.0,
+            'cyto': 30.0,
+            'cyto2': 30.0,
+            'cyto3': 30.0,
+            'cyto_sam': 30.0
+        }
+        
+        # Get default diameter for initial pass
+        initial_diameter = default_diameters.get(model_name, 30.0)
+        
+        # Ensure model is loaded
         if self._cellpose_model is None:
-            self._cellpose_model = models.CellposeModel(
-                gpu=self.gpu_available,
-                model_type='nuclei'
-            )
+            self._cellpose_model = models.CellposeModel(gpu=self.gpu_available)
         
         imgs = self._prepare_image_for_cellpose(image)
         
-        # Use Cellpose's size estimation
-        diameter, _ = self._cellpose_model.sz.eval(imgs)
-        
-        return float(diameter)
+        try:
+            # Run a quick segmentation with default diameter
+            masks, flows, styles = self._cellpose_model.eval(
+                imgs,
+                diameter=initial_diameter,
+                flow_threshold=0.4,
+                cellprob_threshold=0.0
+            )
+            
+            # Calculate diameter from masks if any cells were found
+            if masks is not None and np.any(masks > 0):
+                median_diam, diams = utils.diameters(masks)
+                if median_diam > 0:
+                    return float(median_diam)
+            
+            # Fall back to default if no cells found
+            return initial_diameter
+            
+        except Exception as e:
+            # If estimation fails, return a reasonable default
+            print(f"Diameter estimation warning: {e}, using default {initial_diameter}")
+            return initial_diameter

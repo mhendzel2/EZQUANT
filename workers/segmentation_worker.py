@@ -161,10 +161,11 @@ class DiameterEstimationWorker(QThread):
     error = Signal(str)
     status = Signal(str)
     
-    def __init__(self, image: np.ndarray, gpu_available: bool = False):
+    def __init__(self, image: np.ndarray, gpu_available: bool = False, model_name: str = 'nuclei'):
         super().__init__()
         self.image = image
         self.gpu_available = gpu_available
+        self.model_name = model_name
     
     def run(self):
         """Run diameter estimation"""
@@ -172,7 +173,7 @@ class DiameterEstimationWorker(QThread):
             self.status.emit("Estimating cell diameter...")
             
             engine = SegmentationEngine(gpu_available=self.gpu_available)
-            diameter = engine.estimate_diameter(self.image)
+            diameter = engine.estimate_diameter(self.image, model_name=self.model_name)
             
             self.status.emit(f"Estimated diameter: {diameter:.1f} pixels")
             self.finished.emit(diameter)

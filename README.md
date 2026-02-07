@@ -5,7 +5,7 @@ A desktop application for undergraduate students to perform nuclei segmentation 
 ## Features
 
 - **Advanced Segmentation**: Cellpose 4 and Segment Anything Model (SAM) integration
-- **Multi-dimensional Support**: 2D/3D multichannel TIFF files (8-bit, 16-bit)
+- **Multi-dimensional Support**: 2D/3D multichannel TIFF files (8-bit, 16-bit), plus MetaMorph ND (`.nd`) acquisition spec files that reference TIFF series
 - **Quality Control**: Cell cycle-aware DNA intensity analysis with outlier detection
 - **Manual Correction**: Split, merge, delete, and add nuclei tools
 - **Comprehensive Measurements**: Morphometric and intensity analysis (toggleable)

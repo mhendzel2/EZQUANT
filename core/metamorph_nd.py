@@ -69,11 +69,17 @@ class MetamorphNDFile:
                 stage_names.append(f'Stage_{i+1}')
         
         self.metadata['stage_names'] = stage_names
-        
-        # Extract file pattern
-        self.metadata['file_pattern'] = self._extract_value(content, 'StartTime1')
-        
-        # Build file list based on dimensions
+
+        # Extract base name/prefix (key names vary across MetaMorph versions)
+        self.metadata['base_name'] = (
+            self._extract_value(content, 'BaseName')
+            or self._extract_value(content, 'FileName')
+            or self._extract_value(content, 'Filename')
+            or self._extract_value(content, 'Prefix')
+            or self.nd_filepath.stem
+        )
+
+        # Build file list (prefer discovering existing files; fallback to convention-based generation)
         self._build_file_list()
     
     def _extract_value(self, content: str, key: str) -> Optional[str]:
@@ -102,11 +108,17 @@ class MetamorphNDFile:
     
     def _build_file_list(self):
         """Build list of image files based on metadata"""
-        # Get base filename pattern
-        base_pattern = self.metadata.get('file_pattern', '')
-        
+        # Prefer discovering files by scanning directory; this is the most robust.
+        discovered = self._discover_files_from_directory()
+        if discovered:
+            self.file_list = discovered
+            return
+
+        # Fallback: generate filenames based on common MetaMorph naming conventions
+        base_pattern = (self.metadata.get('base_name') or '').strip()
+        if base_pattern.lower().endswith('.tif') or base_pattern.lower().endswith('.tiff'):
+            base_pattern = Path(base_pattern).stem
         if not base_pattern:
-            # Try to find base name from .nd filename
             base_pattern = self.nd_filepath.stem
         
         # Generate all file combinations
@@ -142,6 +154,76 @@ class MetamorphNDFile:
                                 'stage_name': self.metadata['stage_names'][s] if s < len(self.metadata['stage_names']) else f'Stage_{s}',
                                 'wavelength_name': self.metadata['wavelength_names'][w] if w < len(self.metadata['wavelength_names']) else f'Wavelength_{w}'
                             })
+
+    def _discover_files_from_directory(self) -> List[Dict]:
+        """Discover TIFFs referenced by this ND by scanning the ND directory.
+
+        MetaMorph ND files don't always provide a single reliable filename template.
+        This method scans for TIFF/TIFF files and parses common tokens:
+        - t### (timepoint, 1-based)
+        - s#   (stage/position, 1-based)
+        - w#   (wavelength/channel, 1-based)
+        - z### (z slice, 1-based)
+
+        Returns:
+            List[Dict] with the same schema as self.file_list.
+        """
+        base_candidates = []
+        base_name = (self.metadata.get('base_name') or '').strip()
+        if base_name:
+            base_candidates.append(Path(base_name).stem)
+        base_candidates.append(self.nd_filepath.stem)
+        base_candidates = [b for b in dict.fromkeys(base_candidates) if b]
+
+        tif_files = list(self.base_dir.glob('*.tif')) + list(self.base_dir.glob('*.tiff'))
+        if not tif_files:
+            return []
+
+        def parse_tokens(stem: str) -> Tuple[int, int, int, int]:
+            # Defaults are 0-based indices
+            stage_idx = 0
+            wave_idx = 0
+            z_idx = 0
+            time_idx = 0
+
+            # Parse token occurrences like t001, s1, w2, z003 anywhere in the stem
+            for key, value in re.findall(r'(?i)([tswz])(\d+)', stem):
+                key = key.lower()
+                number = int(value)
+                if key == 't':
+                    time_idx = max(0, number - 1)
+                elif key == 's':
+                    stage_idx = max(0, number - 1)
+                elif key == 'w':
+                    wave_idx = max(0, number - 1)
+                elif key == 'z':
+                    z_idx = max(0, number - 1)
+
+            return stage_idx, wave_idx, z_idx, time_idx
+
+        discovered: List[Dict] = []
+        for path in tif_files:
+            stem = path.stem
+
+            # If we have a plausible base name, prefer files that start with it.
+            if base_candidates and not any(stem.startswith(c) for c in base_candidates):
+                continue
+
+            stage_idx, wave_idx, z_idx, time_idx = parse_tokens(stem)
+
+            discovered.append({
+                'filepath': path,
+                'stage': stage_idx,
+                'wavelength': wave_idx,
+                'z': z_idx,
+                'timepoint': time_idx,
+                'stage_name': self.metadata['stage_names'][stage_idx] if stage_idx < len(self.metadata['stage_names']) else f'Stage_{stage_idx}',
+                'wavelength_name': self.metadata['wavelength_names'][wave_idx] if wave_idx < len(self.metadata['wavelength_names']) else f'Wavelength_{wave_idx}'
+            })
+
+        # Sort for stable downstream stacking
+        discovered.sort(key=lambda x: (x['timepoint'], x['stage'], x['z'], x['wavelength']))
+        return discovered
     
     def _construct_filename(self, base: str, stage: int, wave: int, z: int, time: int,
                            do_stage: bool, do_wave: bool, do_z: bool, do_time: bool) -> str:
@@ -244,15 +326,10 @@ class MetamorphNDFile:
         # Load first image to get spatial dimensions
         first_img, first_meta = TIFFLoader.load_tiff(str(files[0]['filepath']))
         
-        # Get Y, X dimensions from first image
-        if first_img.ndim == 3:
-            # (C, Y, X)
-            height, width = first_img.shape[-2:]
-        elif first_img.ndim == 4:
-            # (Z, C, Y, X)
-            height, width = first_img.shape[-2:]
-        else:
-            height, width = first_img.shape
+        # Get Y, X dimensions from first image - always use last two dimensions
+        # After _normalize_dimensions, images are either (C, Y, X) or (Z, C, Y, X)
+        # In both cases, the last two dimensions are (Y, X)
+        height, width = first_img.shape[-2], first_img.shape[-1]
         
         # Initialize output array
         if n_z > 1:
@@ -266,19 +343,45 @@ class MetamorphNDFile:
         for file_info in files:
             img, _ = TIFFLoader.load_tiff(str(file_info['filepath']))
             
-            # Extract single channel (assume each file is single channel)
-            if img.ndim == 3:
-                img = img[0]  # Take first channel
+            # Extract single 2D plane from the loaded image
+            # After TIFFLoader, images are (C, Y, X) or (Z, C, Y, X)
+            if img.ndim == 2:
+                # Already 2D
+                plane = img
+            elif img.ndim == 3:
+                # (C, Y, X) - take first channel
+                plane = img[0]
             elif img.ndim == 4:
-                img = img[0, 0]  # Take first z and first channel
+                # (Z, C, Y, X) - take middle Z slice, first channel
+                z_mid = img.shape[0] // 2
+                plane = img[z_mid, 0]
+            else:
+                # Unexpected, take slice
+                plane = img.reshape(img.shape[-2:])
+            
+            # Verify dimensions match
+            if plane.shape != (height, width):
+                # Try to handle size mismatch by cropping or padding
+                if plane.shape[0] >= height and plane.shape[1] >= width:
+                    # Crop to expected size
+                    plane = plane[:height, :width]
+                else:
+                    # Resize if significantly different
+                    import warnings
+                    warnings.warn(
+                        f"Image size mismatch: expected ({height}, {width}), "
+                        f"got {plane.shape}. Resizing to match."
+                    )
+                    from skimage.transform import resize
+                    plane = resize(plane, (height, width), preserve_range=True).astype(img.dtype)
             
             z_idx = file_info['z']
             w_idx = file_info['wavelength']
             
             if n_z > 1:
-                output[z_idx, w_idx] = img
+                output[z_idx, w_idx] = plane
             else:
-                output[w_idx] = img
+                output[w_idx] = plane
         
         # Build metadata
         metadata = {
