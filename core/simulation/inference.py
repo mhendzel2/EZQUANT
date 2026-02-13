@@ -14,6 +14,10 @@ from dataclasses import dataclass
 from scipy import stats
 from scipy.optimize import differential_evolution
 
+# Constants
+EPSILON_FOR_LOG = 1e-10  # Small value to prevent log(0)
+EPSILON_FOR_DIVISION = 1e-10  # Small value to prevent division by zero
+
 
 @dataclass
 class PriorDistribution:
@@ -129,8 +133,8 @@ class SummaryStatistics:
         n_fit = max(3, min(len(msd) // 5, 20))
         
         # Log-log fit for alpha
-        log_msd = np.log(msd[1:n_fit] + 1e-10)
-        log_t = np.log(time_lags[1:n_fit] + 1e-10)
+        log_msd = np.log(msd[1:n_fit] + EPSILON_FOR_LOG)
+        log_t = np.log(time_lags[1:n_fit] + EPSILON_FOR_LOG)
         
         alpha = np.polyfit(log_t, log_msd, 1)[0]
         
@@ -328,7 +332,7 @@ class BayesianCalibration:
             return np.sum(np.abs(stats1 - stats2))
         elif metric == 'relative':
             # Relative error (scale-invariant)
-            return np.mean(np.abs((stats1 - stats2) / (stats1 + 1e-10)))
+            return np.mean(np.abs((stats1 - stats2) / (stats1 + EPSILON_FOR_DIVISION)))
         else:
             raise ValueError(f"Unknown metric: {metric}")
 

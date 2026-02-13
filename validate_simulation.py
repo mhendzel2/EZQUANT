@@ -331,7 +331,7 @@ def main():
     try:
         import matplotlib
         matplotlib.use('Agg')  # Non-interactive backend
-    except:
+    except ImportError:
         print("Warning: matplotlib not available, skipping plots")
         return
     

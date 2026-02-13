@@ -330,5 +330,6 @@ class FRAPSimulator:
                 'mobile_fraction': mobile_fraction,
                 'D_fit': D_fit
             }
-        except:
+        except (RuntimeError, ValueError) as e:
+            # Fitting failed - return NaN values
             return {'tau': np.nan, 'mobile_fraction': np.nan, 'D_fit': np.nan}

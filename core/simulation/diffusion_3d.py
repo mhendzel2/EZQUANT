@@ -287,7 +287,8 @@ class Particle3DSimulator:
             # Clamp to reasonable range
             alpha = np.clip(alpha, 0.3, 2.0)
             return alpha
-        except:
+        except (np.linalg.LinAlgError, ValueError):
+            # Fitting failed - return default normal diffusion
             return 1.0
     
     def validate_parameter_recovery(

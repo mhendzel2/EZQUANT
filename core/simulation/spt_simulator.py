@@ -291,7 +291,8 @@ class SPTSimulator:
                 counts[lag] += 1
         
         # Average
-        msd[counts > 0] /= counts[counts > 0]
+        valid_indices = counts > 0
+        msd[valid_indices] /= counts[valid_indices]
         
         return msd
     

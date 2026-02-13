@@ -41,10 +41,16 @@ class SimulationWorker(QThread):
         super().__init__()
         self.sim_type = sim_type
         self.params = params
+        self._stop_requested = False
+    
+    def request_stop(self):
+        """Request graceful stop of simulation."""
+        self._stop_requested = True
     
     def run(self):
         """Run simulation in background thread."""
         try:
+            self._stop_requested = False
             self.progress.emit("Initializing simulation...")
             
             if self.sim_type == 'frap':
@@ -343,11 +349,20 @@ class SimulationPanel(QWidget):
         self.worker.start()
     
     def stop_simulation(self):
-        """Stop running simulation."""
+        """Stop running simulation gracefully."""
         if self.worker and self.worker.isRunning():
-            self.worker.terminate()
-            self.worker.wait()
-            self.output_text.append("Simulation stopped by user")
+            self.output_text.append("Requesting simulation stop...")
+            self.worker.request_stop()
+            
+            # Wait up to 5 seconds for graceful shutdown
+            if not self.worker.wait(5000):
+                # If still running after 5 seconds, force terminate
+                self.output_text.append("Force terminating simulation...")
+                self.worker.terminate()
+                self.worker.wait()
+            else:
+                self.output_text.append("Simulation stopped gracefully")
+            
             self.run_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
     
