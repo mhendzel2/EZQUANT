@@ -1,15 +1,26 @@
 # Nuclei Segmentation & Analysis Application
 
-A desktop application for undergraduate students to perform nuclei segmentation and morphometric analysis using advanced deep learning models (Cellpose 4, SAM).
+A desktop application for undergraduate students to perform nuclei segmentation and morphometric analysis using advanced deep learning models (Cellpose 4, SAM), plus 3D particle diffusion simulation with parameter inference.
 
 ## Features
 
+### Segmentation & Analysis
 - **Advanced Segmentation**: Cellpose 4 and Segment Anything Model (SAM) integration
 - **Multi-dimensional Support**: 2D/3D multichannel TIFF files (8-bit, 16-bit), plus MetaMorph ND (`.nd`) acquisition spec files that reference TIFF series
 - **Quality Control**: Cell cycle-aware DNA intensity analysis with outlier detection
 - **Manual Correction**: Split, merge, delete, and add nuclei tools
 - **Comprehensive Measurements**: Morphometric and intensity analysis (toggleable)
 - **Cell Cycle Analysis**: Optional phase assignment (G1/S/G2M) with manual boundary adjustment
+
+### Simulation & Parameter Inference ✨ NEW
+- **3D Diffusion Simulation**: Particle tracking with compartment boundaries
+- **FRAP Modeling**: Fluorescence Recovery After Photobleaching simulation
+- **SPT Analysis**: Single Particle Tracking with realistic noise models
+- **Parameter Inference**: Bayesian calibration and simulation-based inference
+- **Scientific Validation**: Parameter recovery tests and unit consistency
+- **2D vs 3D Comparison**: Demonstrates bias in 2D projections
+
+### Visualization & Export
 - **Interactive Visualization**: Plotly-based charts with bidirectional selection
 - **Project Management**: Save/load projects with data aggregation across images
 - **Plugin System**: Extensible architecture for custom measurements
@@ -51,6 +62,7 @@ A desktop application for undergraduate students to perform nuclei segmentation 
 
 ## Quick Start
 
+### Segmentation Workflow
 1. **Create a Project**: File → New Project
 2. **Import Image**: File → Import TIFF, select your image file
 3. **Select DNA Channel**: Choose the channel containing DNA/nuclear staining
@@ -60,6 +72,16 @@ A desktop application for undergraduate students to perform nuclei segmentation 
 7. **Analyze**: Choose 2D or 3D workflow, select measurements, run analysis
 8. **Visualize**: Explore interactive plots in the Visualization tab
 9. **Export**: File → Export → Measurements (CSV/Excel)
+
+### Simulation Workflow ✨ NEW
+1. **Run Validation**: `python validate_simulation.py` to see scientific validation
+2. **Explore Examples**: See `SIMULATION_VALIDATION.md` for detailed usage
+3. **Parameter Recovery**: Test diffusion coefficient estimation
+4. **FRAP Simulation**: Model photobleaching recovery experiments
+5. **SPT Analysis**: Simulate and analyze particle trajectories
+6. **Inference**: Estimate parameters from experimental data
+
+For detailed simulation documentation, see [SIMULATION_VALIDATION.md](SIMULATION_VALIDATION.md).
 
 ## Plugin Development
 
