@@ -381,3 +381,12 @@ class SegmentationPanel(QWidget):
         """Clear segmentation history"""
         self.history_combo.clear()
         self.results_text.setText("History cleared")
+    
+    def clear(self):
+        """Clear the panel state"""
+        self.current_image = None
+        self.diameter_spin.setValue(30)
+        self.flow_threshold_spin.setValue(0.4)
+        self.cellprob_threshold_spin.setValue(0.0)
+        self.results_text.clear()
+        self.progress_bar.hide()

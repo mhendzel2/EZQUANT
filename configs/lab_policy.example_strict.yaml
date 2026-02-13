@@ -1,0 +1,31 @@
+policy_name: "HendzelLab_Undergrad_Strict"
+policy_version: "2026-02-13"
+require_override_reason: true
+roles:
+  student:
+    allowed_recipes: [nuclear_intensity]
+    export: PASS_ONLY
+    allow_overrides: false
+  instructor:
+    allowed_recipes: [nuclear_intensity]
+    export: PASS_WARN
+    allow_overrides: true
+qc_thresholds:
+  metadata:
+    pixel_size_um_range: [0.05, 1.0]
+  saturation:
+    max_fraction_global: 0.001
+  drift:
+    max_pixels: 1.0
+  focus:
+    max_drop_fraction: 0.25
+  snr:
+    warn_min: 3.0
+    fail_min: 2.0
+recipes:
+  nuclear_intensity:
+    locked_params:
+      background_method: annulus
+      flatfield: off
+    student_editable_params:
+      - expected_nucleus_diameter_px

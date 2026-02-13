@@ -222,6 +222,32 @@ class ImageViewer(QWidget):
         self.mask_data = None
         self.mask_item.clear()
     
+    def clear(self):
+        """Clear all image data and reset the viewer"""
+        self.image_data = None
+        self.mask_data = None
+        self.current_slice = 0
+        self.channel_names = []
+        self.selected_nucleus_id = None
+        
+        # Clear display items
+        self.image_item.clear()
+        self.mask_item.clear()
+        
+        # Clear channel controls
+        for checkbox in self.channel_checkboxes:
+            checkbox.deleteLater()
+        self.channel_checkboxes.clear()
+        self.channel_contrast_widgets.clear()
+        
+        # Reset combos
+        self.dna_channel_combo.clear()
+        
+        # Reset slice slider
+        self.slice_slider.setRange(0, 0)
+        self.slice_slider.setValue(0)
+        self.slice_label.setText("Slice: 0/0")
+    
     def highlight_nucleus(self, nucleus_id: int):
         """Highlight a specific nucleus and zoom to it"""
         self.selected_nucleus_id = nucleus_id

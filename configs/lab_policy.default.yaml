@@ -1,0 +1,45 @@
+policy_name: "HendzelLab_Undergrad"
+policy_version: "2026-02-13"
+require_override_reason: true
+roles:
+  student:
+    allowed_recipes: [nuclear_intensity, puncta_counting]
+    export: PASS_ONLY
+    allow_overrides: false
+  instructor:
+    allowed_recipes: [nuclear_intensity, puncta_counting, colocalization]
+    export: PASS_WARN
+    allow_overrides: true
+  research:
+    allowed_recipes: [nuclear_intensity, puncta_counting, colocalization, frap_basic, nb_camera_calibrated]
+    export: PASS_WARN
+    allow_overrides: true
+qc_thresholds:
+  metadata:
+    pixel_size_um_range: [0.01, 5.0]
+  saturation:
+    max_fraction_global: 0.005
+    max_fraction_roi: 0.002
+  drift:
+    max_pixels: 2.0
+  focus:
+    max_drop_fraction: 0.4
+  snr:
+    warn_min: 2.0
+    fail_min: 1.2
+  segmentation:
+    min_objects: 1
+    max_objects: 5000
+    min_median_area: 20
+    max_median_area: 5000
+recipes:
+  nuclear_intensity:
+    locked_params:
+      background_method: annulus
+      flatfield: off
+    student_editable_params:
+      - expected_nucleus_diameter_px
+    bounds:
+      expected_nucleus_diameter_px:
+        min: 5
+        max: 80
