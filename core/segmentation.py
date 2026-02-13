@@ -218,18 +218,22 @@ class SegmentationEngine:
                         flow_threshold: float = 0.4,
                         cellprob_threshold: float = 0.0,
                         do_3d: bool = False,
-                        channels: List[int] = [0, 0]) -> Tuple[np.ndarray, Dict]:
+                        channels: List[int] = [0, 0],
+                        restoration_mode: str = 'none',
+                        use_3d_backend: str = 'default') -> Tuple[np.ndarray, Dict]:
         """
         Perform segmentation using Cellpose
         
         Args:
             image: Image array with shape (Z, C, Y, X), (C, Y, X), (Z, Y, X), or (Y, X)
-            model_name: Cellpose model name ('nuclei', 'cyto3', etc.)
+            model_name: Cellpose model name ('nuclei', 'cyto3', etc.')
             diameter: Expected cell diameter in pixels (None for auto-detect)
             flow_threshold: Flow error threshold (0-3, higher = fewer masks)
             cellprob_threshold: Cell probability threshold (-6 to 6, higher = fewer masks)
             do_3d: Whether to use 3D segmentation
             channels: [cytoplasm_channel, nucleus_channel], use [0,0] for grayscale
+            restoration_mode: Cellpose3 restoration mode ('none', 'auto', 'denoise', 'deblur')
+            use_3d_backend: 3D backend to use ('default', 'hybrid2d3d', 'true3d')
         
         Returns:
             tuple: (masks, info_dict)
@@ -244,6 +248,75 @@ class SegmentationEngine:
         import time
         
         start_time = time.time()
+        
+        # === Cellpose3 Restoration Mode ===
+        if restoration_mode != 'none':
+            try:
+                from core.cellpose3_restoration import Cellpose3RestorationEngine
+                logger.info(f"Using Cellpose3 restoration mode: {restoration_mode}")
+                
+                restoration_engine = Cellpose3RestorationEngine(gpu_available=self.gpu_available)
+                return restoration_engine.segment_with_restoration(
+                    image=image,
+                    model_name=model_name,
+                    restoration_mode=restoration_mode,
+                    diameter=diameter,
+                    flow_threshold=flow_threshold,
+                    cellprob_threshold=cellprob_threshold,
+                    do_3d=do_3d,
+                    channels=channels
+                )
+            except ImportError as e:
+                logger.warning(f"Cellpose3 restoration not available: {e}. Falling back to standard mode.")
+        
+        # === True 3D Backend Selection ===
+        if do_3d and use_3d_backend == 'hybrid2d3d':
+            try:
+                from core.segmentation_3d import Hybrid2D3DBackend
+                logger.info("Using hybrid 2D+3D segmentation backend")
+                
+                # Create 2D segmentation function
+                def segment_2d_fn(slice_2d):
+                    # Run standard Cellpose on 2D slice
+                    masks_2d, _ = self.segment_cellpose(
+                        image=slice_2d,
+                        model_name=model_name,
+                        diameter=diameter,
+                        flow_threshold=flow_threshold,
+                        cellprob_threshold=cellprob_threshold,
+                        do_3d=False,
+                        channels=channels,
+                        restoration_mode='none',  # Already handled above
+                        use_3d_backend='default'  # Prevent recursion
+                    )
+                    return masks_2d
+                
+                # Create hybrid backend
+                hybrid_backend = Hybrid2D3DBackend(
+                    segmentation_2d_fn=segment_2d_fn,
+                    min_overlap_ratio=0.3,
+                    max_distance_z=2
+                )
+                
+                # Run segmentation
+                masks = hybrid_backend.segment(image)
+                
+                # Calculate statistics
+                nucleus_count, median_area, cv_area = self._compute_label_area_stats(masks)
+                
+                info = {
+                    'model_name': model_name,
+                    'backend': 'hybrid2d3d',
+                    'nucleus_count': nucleus_count,
+                    'median_area': median_area,
+                    'cv_area': cv_area,
+                    'processing_time': time.time() - start_time,
+                }
+                
+                return masks, info
+                
+            except Exception as e:
+                logger.warning(f"Hybrid 2D+3D backend failed: {e}. Falling back to default.")
         
         # === Input Validation ===
         
