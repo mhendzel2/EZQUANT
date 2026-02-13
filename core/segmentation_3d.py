@@ -346,7 +346,7 @@ def compute_3d_iou(mask1: np.ndarray, mask2: np.ndarray) -> float:
         IoU score (0-1)
     """
     intersection = np.logical_and(mask1, mask2).sum()
-    union = np.logical_and(mask1, mask2).sum()
+    union = np.logical_or(mask1, mask2).sum()
     
     if union == 0:
         return 0.0
