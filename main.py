@@ -15,6 +15,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt, QTimer
 import torch
+import PIL.Image
+
+# Disable DecompressionBombError for large images
+PIL.Image.MAX_IMAGE_PIXELS = None
 
 from gui.main_window import MainWindow
 

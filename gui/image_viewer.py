@@ -6,9 +6,9 @@ Displays images with Z-slice navigation, channel controls, and mask overlays
 import numpy as np
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                                QSlider, QCheckBox, QComboBox, QPushButton,
-                               QSpinBox, QGroupBox, QScrollArea, QSizePolicy)
-from PySide6.QtCore import Qt, Signal, QPointF, QRectF
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen
+                               QSpinBox, QGroupBox, QScrollArea)
+from PySide6.QtCore import Qt, Signal, QRectF
+from PySide6.QtGui import QPainter
 import pyqtgraph as pg
 from typing import Optional, List, Tuple, Dict
 
@@ -48,6 +48,12 @@ class ImageViewer(QWidget):
         self.auto_contrast = True
         self.contrast_min: Dict[int, float] = {}
         self.contrast_max: Dict[int, float] = {}
+
+        # Caches to minimize expensive redraws
+        self._cached_image_key = None
+        self._cached_mask_key = None
+        self._cached_mask_base: Optional[np.ndarray] = None
+        self._mask_lut: Optional[np.ndarray] = None
         
         self.setup_ui()
     
@@ -202,6 +208,10 @@ class ImageViewer(QWidget):
         
         # Calculate initial contrast settings
         self._calculate_auto_contrast()
+
+        self.selected_nucleus_id = None
+        self._invalidate_image_cache()
+        self._invalidate_mask_cache(clear_lut=False)
         
         # Display first slice
         self._update_display()
@@ -215,11 +225,16 @@ class ImageViewer(QWidget):
             mask: Labeled mask array with shape (Z, Y, X) or (Y, X)
         """
         self.mask_data = mask
-        self._update_display()
+        self.selected_nucleus_id = None
+        self._invalidate_mask_cache(clear_lut=True)
+        if self.mask_visible:
+            self._update_mask_overlay()
     
     def clear_mask(self):
         """Clear the mask overlay"""
         self.mask_data = None
+        self.selected_nucleus_id = None
+        self._invalidate_mask_cache(clear_lut=False)
         self.mask_item.clear()
     
     def clear(self):
@@ -251,11 +266,23 @@ class ImageViewer(QWidget):
     def highlight_nucleus(self, nucleus_id: int):
         """Highlight a specific nucleus and zoom to it"""
         self.selected_nucleus_id = nucleus_id
-        self._update_display()
+        if self.mask_data is not None and self.mask_visible:
+            self._update_mask_overlay()
         
         # Zoom to nucleus (if mask available)
         if self.mask_data is not None:
             self._zoom_to_nucleus(nucleus_id)
+
+    def _invalidate_image_cache(self):
+        """Invalidate cached image composite."""
+        self._cached_image_key = None
+
+    def _invalidate_mask_cache(self, clear_lut: bool = False):
+        """Invalidate cached mask overlays."""
+        self._cached_mask_key = None
+        self._cached_mask_base = None
+        if clear_lut:
+            self._mask_lut = None
     
     def _setup_channel_controls(self):
         """Set up channel control widgets"""
@@ -311,16 +338,24 @@ class ImageViewer(QWidget):
         
         is_3d = self.image_data.ndim == 4
         n_channels = self.image_data.shape[1 if is_3d else 0]
+        max_samples = 1_000_000
         
         for i in range(n_channels):
             if is_3d:
                 channel_data = self.image_data[:, i, :, :]
             else:
                 channel_data = self.image_data[i, :, :]
-            
+
+            flat = channel_data.ravel()
+            if flat.size > max_samples:
+                step = max(1, flat.size // max_samples)
+                sample = flat[::step]
+            else:
+                sample = flat
+
             # Calculate percentiles for auto-contrast
-            self.contrast_min[i] = float(np.percentile(channel_data, 0.1))
-            self.contrast_max[i] = float(np.percentile(channel_data, 99.9))
+            self.contrast_min[i] = float(np.percentile(sample, 0.1))
+            self.contrast_max[i] = float(np.percentile(sample, 99.9))
     
     def _update_display(self):
         """Update the displayed image and mask"""
@@ -334,41 +369,46 @@ class ImageViewer(QWidget):
             slice_data = self.image_data[self.current_slice]
         else:
             slice_data = self.image_data
-        
-        # Create RGB composite
-        height, width = slice_data.shape[-2:]
-        rgb_image = np.zeros((height, width, 3), dtype=np.uint8)
-        
-        for ch_idx in self.visible_channels:
-            if ch_idx >= slice_data.shape[0]:
-                continue
-            
-            channel_img = slice_data[ch_idx]
-            
-            # Apply contrast
-            vmin = self.contrast_min.get(ch_idx, channel_img.min())
-            vmax = self.contrast_max.get(ch_idx, channel_img.max())
-            
-            # Normalize to 0-1
-            if vmax > vmin:
-                normalized = np.clip((channel_img - vmin) / (vmax - vmin), 0, 1)
-            else:
-                normalized = np.zeros_like(channel_img, dtype=float)
-            
-            # Apply channel color
-            color = self.channel_colors[ch_idx]
-            for i in range(3):
-                rgb_image[:, :, i] = np.maximum(
-                    rgb_image[:, :, i],
-                    (normalized * color[i]).astype(np.uint8)
-                )
-        
-        # Display image
-        self.img_item.setImage(rgb_image)
+
+        visible_sorted = tuple(sorted(ch for ch in self.visible_channels if ch < slice_data.shape[0]))
+        contrast_key = tuple(
+            (ch, round(self.contrast_min.get(ch, 0.0), 6), round(self.contrast_max.get(ch, 0.0), 6))
+            for ch in visible_sorted
+        )
+        image_key = (
+            id(self.image_data),
+            self.current_slice if is_3d else 0,
+            visible_sorted,
+            contrast_key
+        )
+
+        if self._cached_image_key != image_key:
+            rgb_image = self._compose_rgb_image(slice_data, visible_sorted)
+            self.img_item.setImage(rgb_image, autoLevels=False)
+            self._cached_image_key = image_key
         
         # Update mask overlay
         if self.mask_data is not None and self.mask_visible:
             self._update_mask_overlay()
+    
+    def _compose_rgb_image(self, slice_data: np.ndarray, visible_channels: Tuple[int, ...]) -> np.ndarray:
+        """Compose a channels-overlaid RGB image for current slice."""
+        height, width = slice_data.shape[-2:]
+        rgb_float = np.zeros((height, width, 3), dtype=np.float32)
+
+        for ch_idx in visible_channels:
+            channel_img = slice_data[ch_idx].astype(np.float32, copy=False)
+
+            vmin = float(self.contrast_min.get(ch_idx, np.min(channel_img)))
+            vmax = float(self.contrast_max.get(ch_idx, np.max(channel_img)))
+            if vmax <= vmin:
+                continue
+
+            normalized = np.clip((channel_img - vmin) / (vmax - vmin), 0.0, 1.0)
+            color = np.asarray(self.channel_colors[ch_idx], dtype=np.float32).reshape(1, 1, 3)
+            np.maximum(rgb_float, normalized[..., None] * color, out=rgb_float)
+
+        return rgb_float.astype(np.uint8, copy=False)
     
     def _update_mask_overlay(self):
         """Update the mask overlay visualization"""
@@ -382,38 +422,48 @@ class ImageViewer(QWidget):
             mask_slice = self.mask_data[self.current_slice]
         else:
             mask_slice = self.mask_data
-        
-        # Create colored mask overlay
-        colored_mask = self._create_colored_mask(mask_slice)
+
+        mask_key = (id(self.mask_data), self.current_slice if is_3d else 0)
+        if self._cached_mask_key != mask_key:
+            self._cached_mask_base = self._create_colored_mask(mask_slice)
+            self._cached_mask_key = mask_key
+
+        if self._cached_mask_base is None:
+            return
+
+        colored_mask = self._cached_mask_base
+        selected_id = self.selected_nucleus_id
+        if selected_id is not None and selected_id > 0:
+            if selected_id <= int(mask_slice.max()):
+                selected_pixels = (mask_slice == selected_id)
+                if np.any(selected_pixels):
+                    colored_mask = colored_mask.copy()
+                    colored_mask[selected_pixels] = np.array([255, 255, 0, 200], dtype=np.uint8)
         
         # Display mask
-        self.mask_item.setImage(colored_mask)
+        self.mask_item.setImage(colored_mask, autoLevels=False)
         self.mask_item.setOpacity(self.mask_opacity)
     
     def _create_colored_mask(self, mask: np.ndarray) -> np.ndarray:
         """Create a colored visualization of the labeled mask"""
         height, width = mask.shape
         
-        # 1. Generate random color table (N_labels + 1 x 4)
         max_id = int(mask.max())
         if max_id == 0:
             return np.zeros((height, width, 4), dtype=np.uint8)
-            
-        # Seed ensures colors are consistent for specific IDs
-        np.random.seed(42) 
-        lut = np.random.randint(0, 255, (max_id + 1, 4), dtype=np.uint8)
-        lut[0] = [0, 0, 0, 0]  # Background transparent
-        lut[:, 3] = 150        # Default alpha
-        
-        # 2. Highlight selected
-        if self.selected_nucleus_id and self.selected_nucleus_id <= max_id:
-            lut[self.selected_nucleus_id] = [255, 255, 0, 200]
-            
-        # 3. Vectorized mapping
-        # This replaces the entire for-loop with one operation
-        colored = lut[mask] 
-        
-        return colored
+
+        # Build/extend deterministic LUT once; avoid reseeding global RNG per redraw.
+        if self._mask_lut is None or self._mask_lut.shape[0] <= max_id:
+            lut = np.zeros((max_id + 1, 4), dtype=np.uint8)
+            lut[0] = [0, 0, 0, 0]
+            labels = np.arange(1, max_id + 1, dtype=np.uint32)
+            lut[1:, 0] = ((labels * 37) % 251 + 4).astype(np.uint8)
+            lut[1:, 1] = ((labels * 67) % 251 + 4).astype(np.uint8)
+            lut[1:, 2] = ((labels * 97) % 251 + 4).astype(np.uint8)
+            lut[1:, 3] = 150
+            self._mask_lut = lut
+
+        return self._mask_lut[mask]
     
     def _zoom_to_nucleus(self, nucleus_id: int):
         """Zoom the view to a specific nucleus"""
@@ -466,9 +516,12 @@ class ImageViewer(QWidget):
             if i < len(default_colors):
                 colors.append(default_colors[i])
             else:
-                # Random colors for additional channels
-                np.random.seed(i)
-                colors.append(tuple(np.random.randint(128, 256, 3).tolist()))
+                # Deterministic high-contrast colors without mutating global RNG state
+                colors.append((
+                    int((37 * i) % 128 + 128),
+                    int((67 * i) % 128 + 128),
+                    int((97 * i) % 128 + 128),
+                ))
         
         return colors
     
@@ -484,6 +537,7 @@ class ImageViewer(QWidget):
         """Handle slice slider change"""
         self.current_slice = value
         self._update_slice_label()
+        self._invalidate_mask_cache(clear_lut=False)
         self._update_display()
         self.slice_changed.emit(value)
     
@@ -494,6 +548,7 @@ class ImageViewer(QWidget):
         elif not checked and channel_idx in self.visible_channels:
             self.visible_channels.remove(channel_idx)
         
+        self._invalidate_image_cache()
         self._update_display()
         self.channel_changed.emit(self.visible_channels)
     
@@ -508,6 +563,7 @@ class ImageViewer(QWidget):
         else:
             self.contrast_max[channel_idx] = float(value)
         
+        self._invalidate_image_cache()
         self._update_display()
     
     def _on_mask_visibility_changed(self, checked: bool):
@@ -547,7 +603,8 @@ class ImageViewer(QWidget):
             nucleus_id = int(mask_slice[y, x])
             if nucleus_id > 0:
                 self.selected_nucleus_id = nucleus_id
-                self._update_display()
+                if self.mask_visible:
+                    self._update_mask_overlay()
                 self.nucleus_selected.emit(nucleus_id)
     
     def fit_to_window(self):

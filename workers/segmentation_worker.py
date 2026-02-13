@@ -119,10 +119,7 @@ class SegmentationWorker(QThread):
             # If original was 3D, expand mask to 3D (replicate to all slices for now)
             if self.image.ndim == 4:
                 n_slices = self.image.shape[0]
-                masks_3d = np.zeros((n_slices,) + masks.shape, dtype=masks.dtype)
-                for i in range(n_slices):
-                    masks_3d[i] = masks
-                masks = masks_3d
+                masks = np.repeat(masks[np.newaxis, ...], n_slices, axis=0)
                 info['note'] = 'Applied 2D segmentation to all slices'
             
             if self._is_cancelled:
