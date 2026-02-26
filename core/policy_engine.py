@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 VALID_ROLES = ("student", "instructor", "research")
 
+# Sentinel value used in policy YAML to indicate no passphrase is configured
+_PLACEHOLDER_HASH_PREFIX = "$2b$12$placeholder"
+
 ACTIONS = {
     "export",
     "override_qc",
@@ -55,7 +58,7 @@ class PolicyEngine:
         stored_hash = role_auth.get("passphrase_hash", "")
 
         # If no hash configured or it's a placeholder, allow switching freely
-        if not stored_hash or stored_hash.startswith("$2b$12$placeholder"):
+        if not stored_hash or stored_hash.startswith(_PLACEHOLDER_HASH_PREFIX):
             self.current_role = role
             return True
 

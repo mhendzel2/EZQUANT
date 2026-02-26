@@ -294,8 +294,11 @@ if _PYSIDE6_AVAILABLE:
             if winner:
                 self.tournament_complete.emit(winner.params)
 
-else:
+        else:
     # Stub for environments without PySide6
     class ABTournamentPanel:  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs):
-            raise RuntimeError("PySide6 is not available. Cannot create ABTournamentPanel.")
+            raise RuntimeError(
+                "PySide6 is not available. Cannot create ABTournamentPanel. "
+                "Install it with: pip install PySide6"
+            )
