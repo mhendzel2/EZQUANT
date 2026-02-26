@@ -1,19 +1,45 @@
-policy_name: "HendzelLab_Undergrad"
-policy_version: "2026-02-13"
+policy_name: "HendzelLab"
+policy_version: "2026-02-25"
 require_override_reason: true
+
+role_auth:
+  instructor:
+    passphrase_hash: "$2b$12$placeholder_instructor_hash"
+  research:
+    passphrase_hash: "$2b$12$placeholder_research_hash"
+
 roles:
   student:
+    description: "Undergraduate — guided workflow, locked parameters"
     allowed_recipes: [nuclear_intensity, puncta_counting]
     export: PASS_ONLY
     allow_overrides: false
+    allow_manual_segmentation_params: false
+    allow_batch_without_preview: false
+    allow_raw_mask_export: false
+    require_tournament: true
+    max_parameter_deviation: 0.0
   instructor:
+    description: "Graduate student / postdoc — full access with audit trail"
     allowed_recipes: [nuclear_intensity, puncta_counting, colocalization]
     export: PASS_WARN
     allow_overrides: true
+    allow_manual_segmentation_params: true
+    allow_batch_without_preview: true
+    allow_raw_mask_export: true
+    require_tournament: false
+    max_parameter_deviation: null
   research:
-    allowed_recipes: [nuclear_intensity, puncta_counting, colocalization, frap_basic, nb_camera_calibrated]
-    export: PASS_WARN
+    description: "PI / senior researcher — unrestricted"
+    allowed_recipes: ALL
+    export: ALL
     allow_overrides: true
+    allow_manual_segmentation_params: true
+    allow_batch_without_preview: true
+    allow_raw_mask_export: true
+    require_tournament: false
+    max_parameter_deviation: null
+
 qc_thresholds:
   metadata:
     pixel_size_um_range: [0.01, 5.0]
@@ -32,6 +58,7 @@ qc_thresholds:
     max_objects: 5000
     min_median_area: 20
     max_median_area: 5000
+
 recipes:
   nuclear_intensity:
     locked_params:
@@ -43,3 +70,8 @@ recipes:
       expected_nucleus_diameter_px:
         min: 5
         max: 80
+    guardrails:
+      min_nuclei_for_export: 30
+      max_cv_area_percent: 80
+      require_dna_channel_set: true
+      max_saturated_fraction: 0.005

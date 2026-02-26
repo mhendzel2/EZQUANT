@@ -7,6 +7,7 @@ import platform
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -62,5 +63,10 @@ def stable_manifest_hash(manifest: RunManifest, ignored_fields: set[str] | None 
     data = manifest.to_dict()
     for key in ignored_fields:
         data.pop(key, None)
+    # Normalize artifact paths to basenames so output directory doesn't affect hash
+    if "artifacts" in data:
+        for artifact in data["artifacts"]:
+            if "path" in artifact:
+                artifact["path"] = Path(artifact["path"]).name
     payload = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
