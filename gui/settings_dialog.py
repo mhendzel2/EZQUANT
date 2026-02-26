@@ -10,6 +10,8 @@ from PySide6.QtCore import Qt, QSettings
 from pathlib import Path
 from typing import Dict, Any
 
+from gui.accessibility import AccessibilityManager, CVDPalette
+
 
 class SettingsDialog(QDialog):
     """Dialog for managing application settings"""
@@ -37,6 +39,7 @@ class SettingsDialog(QDialog):
         self.tab_widget.addTab(self._create_segmentation_tab(), "Segmentation")
         self.tab_widget.addTab(self._create_analysis_tab(), "Analysis")
         self.tab_widget.addTab(self._create_visualization_tab(), "Visualization")
+        self.tab_widget.addTab(self._create_accessibility_tab(), "Accessibility")
         self.tab_widget.addTab(self._create_advanced_tab(), "Advanced")
         
         layout.addWidget(self.tab_widget)
@@ -50,6 +53,7 @@ class SettingsDialog(QDialog):
         button_box.button(QDialogButtonBox.RestoreDefaults).clicked.connect(self._restore_defaults)
         
         layout.addWidget(button_box)
+        AccessibilityManager.apply_accessible_names(self)
     
     def _create_general_tab(self) -> QWidget:
         """Create general settings tab"""
@@ -312,6 +316,61 @@ class SettingsDialog(QDialog):
         
         layout.addStretch()
         return widget
+
+    def _create_accessibility_tab(self) -> QWidget:
+        """Create accessibility settings tab."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        palette_group = QGroupBox("Color & Contrast")
+        palette_layout = QFormLayout()
+        self.colorblind_safe_check = QCheckBox("Enable colorblind-safe palette")
+        palette_layout.addRow(self.colorblind_safe_check)
+
+        self.cvd_palette_combo = QComboBox()
+        self.cvd_palette_combo.addItems(
+            [CVDPalette.OKABE_ITO.value, CVDPalette.IBM.value, CVDPalette.DEFAULT.value]
+        )
+        palette_layout.addRow("Palette:", self.cvd_palette_combo)
+        palette_group.setLayout(palette_layout)
+        layout.addWidget(palette_group)
+
+        ui_group = QGroupBox("Visual Scaling")
+        ui_layout = QFormLayout()
+        self.ui_scale_spin = QDoubleSpinBox()
+        self.ui_scale_spin.setRange(1.0, 2.0)
+        self.ui_scale_spin.setSingleStep(0.1)
+        self.ui_scale_spin.setDecimals(1)
+        self.ui_scale_spin.setSuffix("x")
+        ui_layout.addRow("UI Scale:", self.ui_scale_spin)
+        ui_group.setLayout(ui_layout)
+        layout.addWidget(ui_group)
+
+        input_group = QGroupBox("Motor & Input")
+        input_layout = QFormLayout()
+        self.sticky_keys_check = QCheckBox("Enable sticky keys support")
+        input_layout.addRow(self.sticky_keys_check)
+
+        self.double_click_speed_spin = QSpinBox()
+        self.double_click_speed_spin.setRange(200, 1200)
+        self.double_click_speed_spin.setSuffix(" ms")
+        input_layout.addRow("Double-click interval:", self.double_click_speed_spin)
+
+        self.drag_sensitivity_spin = QSpinBox()
+        self.drag_sensitivity_spin.setRange(1, 30)
+        input_layout.addRow("Drag sensitivity:", self.drag_sensitivity_spin)
+        input_group.setLayout(input_layout)
+        layout.addWidget(input_group)
+
+        screen_reader_group = QGroupBox("Screen Reader")
+        screen_reader_layout = QVBoxLayout()
+        self.screen_reader_hints_check = QCheckBox("Enable screen reader hints")
+        screen_reader_layout.addWidget(self.screen_reader_hints_check)
+        screen_reader_group.setLayout(screen_reader_layout)
+        layout.addWidget(screen_reader_group)
+
+        layout.addStretch()
+        return widget
     
     def _browse_project_dir(self):
         """Browse for default project directory"""
@@ -431,12 +490,35 @@ class SettingsDialog(QDialog):
         self.auto_load_plugins_check.setChecked(
             self.settings.value("advanced/auto_load_plugins", True, type=bool)
         )
-        
+
         # Get plugin directory relative to app
         from pathlib import Path
         default_plugin_dir = Path(__file__).parent.parent / "plugins"
         self.plugin_dir_edit.setText(
             self.settings.value("advanced/plugin_directory", str(default_plugin_dir))
+        )
+
+        # Accessibility
+        self.colorblind_safe_check.setChecked(
+            self.settings.value("accessibility/colorblind_safe", False, type=bool)
+        )
+        self.cvd_palette_combo.setCurrentText(
+            self.settings.value("accessibility/palette", CVDPalette.OKABE_ITO.value)
+        )
+        self.ui_scale_spin.setValue(
+            self.settings.value("accessibility/scale_factor", 1.0, type=float)
+        )
+        self.screen_reader_hints_check.setChecked(
+            self.settings.value("accessibility/screen_reader_hints", True, type=bool)
+        )
+        self.sticky_keys_check.setChecked(
+            self.settings.value("accessibility/sticky_keys", False, type=bool)
+        )
+        self.double_click_speed_spin.setValue(
+            self.settings.value("accessibility/double_click_ms", 400, type=int)
+        )
+        self.drag_sensitivity_spin.setValue(
+            self.settings.value("accessibility/drag_sensitivity", 10, type=int)
         )
     
     def _save_settings(self):
@@ -480,9 +562,21 @@ class SettingsDialog(QDialog):
         self.settings.setValue("advanced/max_history", self.max_history_spin.value())
         self.settings.setValue("advanced/auto_load_plugins", self.auto_load_plugins_check.isChecked())
         self.settings.setValue("advanced/plugin_directory", self.plugin_dir_edit.text())
-        
+
+        # Accessibility
+        self.settings.setValue("accessibility/colorblind_safe", self.colorblind_safe_check.isChecked())
+        self.settings.setValue("accessibility/palette", self.cvd_palette_combo.currentText())
+        self.settings.setValue("accessibility/scale_factor", self.ui_scale_spin.value())
+        self.settings.setValue("accessibility/screen_reader_hints", self.screen_reader_hints_check.isChecked())
+        self.settings.setValue("accessibility/sticky_keys", self.sticky_keys_check.isChecked())
+        self.settings.setValue("accessibility/double_click_ms", self.double_click_speed_spin.value())
+        self.settings.setValue("accessibility/drag_sensitivity", self.drag_sensitivity_spin.value())
+
         # Sync to disk
         self.settings.sync()
+
+        AccessibilityManager.load_from_settings()
+        AccessibilityManager.apply_ui_scale()
     
     def _restore_defaults(self):
         """Restore all settings to defaults"""

@@ -10,6 +10,8 @@ from PySide6.QtCore import Qt, Signal
 from typing import Optional, Dict
 import numpy as np
 
+from gui.accessibility import AccessibilityManager
+
 
 class SegmentationPanel(QWidget):
     """
@@ -20,12 +22,20 @@ class SegmentationPanel(QWidget):
     run_segmentation = Signal(dict)  # Emit segmentation parameters
     run_batch_segmentation = Signal(dict)  # Emit batch segmentation request
     auto_detect_diameter = Signal()
+    optimize_parameters = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
         
         self.current_image: Optional[np.ndarray] = None
         self.gpu_available = False
+        self._running = False
+        self._params_allowed = True
+        self._params_lock_reason = ""
+        self._run_allowed = True
+        self._run_lock_reason = ""
+        self._batch_allowed = True
+        self._batch_lock_reason = ""
         
         self.setup_ui()
     
@@ -177,7 +187,12 @@ class SegmentationPanel(QWidget):
         self.batch_button.setToolTip("Apply current settings to all images in project")
         self.batch_button.clicked.connect(self._on_batch_clicked)
         run_buttons_layout.addWidget(self.batch_button, stretch=1)
-        
+
+        self.optimize_button = QPushButton("Optimize Parameters (A/B)")
+        self.optimize_button.setToolTip("Launch side-by-side A/B tournament for parameter tuning")
+        self.optimize_button.clicked.connect(self.optimize_parameters.emit)
+        run_buttons_layout.addWidget(self.optimize_button, stretch=1)
+
         layout.addLayout(run_buttons_layout)
         
         # Progress
@@ -218,6 +233,8 @@ class SegmentationPanel(QWidget):
         layout.addWidget(history_group)
         
         layout.addStretch()
+
+        AccessibilityManager.apply_accessible_names(self)
     
     def set_image(self, image: np.ndarray, metadata: Dict):
         """Set the current image for segmentation"""
@@ -324,10 +341,12 @@ class SegmentationPanel(QWidget):
     
     def set_running(self, running: bool):
         """Set UI state for running segmentation"""
-        self.run_button.setEnabled(not running)
-        self.batch_button.setEnabled(not running)
-        self.cellpose_params_group.setEnabled(not running)
-        self.sam_params_group.setEnabled(not running)
+        self._running = running
+        self.run_button.setEnabled((not running) and self._run_allowed)
+        self.batch_button.setEnabled((not running) and self._batch_allowed)
+        self.optimize_button.setEnabled(not running)
+        self.cellpose_params_group.setEnabled((not running) and self._params_allowed)
+        self.sam_params_group.setEnabled((not running) and self._params_allowed)
         
         if running:
             self.progress_bar.setRange(0, 0)  # Indeterminate
@@ -381,3 +400,41 @@ class SegmentationPanel(QWidget):
         """Clear segmentation history"""
         self.history_combo.clear()
         self.results_text.setText("History cleared")
+
+    def set_parameter_controls_enabled(self, enabled: bool, reason: str = ""):
+        """Enable/disable manual parameter controls while keeping run controls available."""
+        self._params_allowed = enabled
+        self._params_lock_reason = reason
+        controls = [
+            self.cellpose_params_group,
+            self.sam_params_group,
+            self.auto_diameter_btn,
+            self.model_combo,
+            self.sam_model_combo,
+            self.sam_automatic_check,
+            self.diameter_spin,
+            self.flow_threshold_spin,
+            self.cellprob_threshold_spin,
+            self.do_3d_check,
+            self.channel0_spin,
+            self.channel1_spin,
+            self.cellpose_radio,
+            self.sam_radio,
+        ]
+        for control in controls:
+            control.setEnabled(enabled and not self._running)
+            control.setToolTip(reason if (reason and not enabled) else "")
+
+    def set_run_action_enabled(self, enabled: bool, reason: str = ""):
+        """Enable/disable run action with explanatory tooltip."""
+        self._run_allowed = enabled
+        self._run_lock_reason = reason
+        self.run_button.setEnabled(enabled and not self._running)
+        self.run_button.setToolTip(reason if (reason and not enabled) else "")
+
+    def set_batch_action_enabled(self, enabled: bool, reason: str = ""):
+        """Enable/disable batch action with explanatory tooltip."""
+        self._batch_allowed = enabled
+        self._batch_lock_reason = reason
+        self.batch_button.setEnabled(enabled and not self._running)
+        self.batch_button.setToolTip(reason if (reason and not enabled) else "")

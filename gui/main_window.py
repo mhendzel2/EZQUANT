@@ -5,7 +5,8 @@ Main window for the Nuclei Segmentation Application
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QMenuBar, QMenu, QToolBar, QStatusBar,
                                QFileDialog, QMessageBox, QDockWidget, QLabel,
-                               QSplitter, QInputDialog, QProgressDialog, QDialogButtonBox, QApplication)
+                               QSplitter, QInputDialog, QProgressDialog, QDialogButtonBox, QApplication,
+                               QComboBox, QLineEdit, QDialog)
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from pathlib import Path
@@ -15,6 +16,7 @@ import pandas as pd
 import datetime
 
 from core.project_data import Project, ImageData
+from core.policy_engine import PolicyEngine
 from core.image_io import TIFFLoader
 from core.plugin_loader import PluginLoader
 from gui.image_viewer import ImageViewer
@@ -23,6 +25,8 @@ from gui.analysis_panel import AnalysisPanel
 from gui.visualization_panel import VisualizationPanel
 from gui.settings_dialog import SettingsDialog
 from gui.project_panel import ProjectPanel
+from gui.ab_tournament_panel import ABTournamentPanel
+from gui.accessibility import AccessibilityManager
 from workers.segmentation_worker import SegmentationWorker, DiameterEstimationWorker, BatchSegmentationWorker
 from workers.measurement_worker import MeasurementWorker
 
@@ -39,6 +43,9 @@ class MainWindow(QMainWindow):
         
         self.gpu_available = gpu_available
         self.gpu_info = gpu_info
+
+        # Accessibility settings
+        AccessibilityManager.load_from_settings()
         
         # Project management
         self.project: Optional[Project] = None
@@ -58,6 +65,17 @@ class MainWindow(QMainWindow):
         self.current_measurements: Optional[pd.DataFrame] = None
         self.current_masks: Optional[np.ndarray] = None
         self.current_intensity_images: Optional[Dict[str, np.ndarray]] = None
+        self.current_image_data: Optional[np.ndarray] = None
+        self.current_metadata: Dict = {}
+
+        # Tournament state tracking
+        self._tournament_completed_indices = set()
+        self._policy_sync_in_progress = False
+        self._latest_gate_entry: Optional[Dict] = None
+
+        # Policy engine
+        policy_path = Path(__file__).resolve().parent.parent / "configs" / "lab_policy.default.yaml"
+        self.policy_engine = PolicyEngine(policy_path=policy_path)
         
         # Auto-save timer
         self.autosave_timer = QTimer()
@@ -74,9 +92,11 @@ class MainWindow(QMainWindow):
         self.create_menus()
         self.create_toolbar()
         self.create_statusbar()
+        AccessibilityManager.apply_ui_scale(QApplication.instance())
         
         # Start with new project
         self.new_project()
+        self._refresh_policy_ui()
         
         self.setWindowTitle("Nuclei Segmentation & Analysis")
         self.resize(1400, 900)
@@ -126,6 +146,7 @@ class MainWindow(QMainWindow):
         self.segmentation_worker: Optional[SegmentationWorker] = None
         self.diameter_worker: Optional[DiameterEstimationWorker] = None
         self.measurement_worker: Optional[MeasurementWorker] = None
+        AccessibilityManager.apply_accessible_names(self)
     
     def _create_segmentation_tab(self) -> QWidget:
         """Create the segmentation tab with image viewer and controls"""
@@ -145,6 +166,7 @@ class MainWindow(QMainWindow):
         self.segmentation_panel.run_segmentation.connect(self._on_run_segmentation)
         self.segmentation_panel.run_batch_segmentation.connect(self._on_run_batch_segmentation)
         self.segmentation_panel.auto_detect_diameter.connect(self._on_auto_detect_diameter)
+        self.segmentation_panel.optimize_parameters.connect(self._on_optimize_parameters)
         self.image_viewer.nucleus_selected.connect(self._on_nucleus_selected)
         
         layout.addWidget(self.segmentation_panel, stretch=1)
@@ -164,6 +186,7 @@ class MainWindow(QMainWindow):
         
         # Connect signals
         self.analysis_panel.run_measurements.connect(self._on_run_measurements)
+        self.analysis_panel.recipe_selected.connect(self._on_recipe_selected)
         self.analysis_panel.manage_plugins_btn.clicked.connect(self.show_plugin_manager)
         self.analysis_panel.refresh_plugins_requested.connect(self._on_refresh_plugins)
         
@@ -215,6 +238,10 @@ class MainWindow(QMainWindow):
         self.export_action.setShortcut(QKeySequence("Ctrl+E"))
         self.export_action.setStatusTip("Export measurements to CSV or Excel")
         self.export_action.triggered.connect(self.export_measurements)
+
+        self.export_raw_masks_action = QAction("Export &Raw Masks...", self)
+        self.export_raw_masks_action.setStatusTip("Export raw mask files for all segmented images")
+        self.export_raw_masks_action.triggered.connect(self.export_raw_masks)
         
         self.batch_action = QAction("&Batch Process...", self)
         self.batch_action.setStatusTip("Process multiple images")
@@ -271,6 +298,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.import_action)
         file_menu.addAction(self.import_folder_action)
         file_menu.addAction(self.export_action)
+        file_menu.addAction(self.export_raw_masks_action)
         file_menu.addAction(self.batch_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
@@ -310,6 +338,14 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.undo_action)
         toolbar.addAction(self.redo_action)
+        toolbar.addSeparator()
+
+        toolbar.addWidget(QLabel("Role:"))
+        self.role_combo = QComboBox()
+        self.role_combo.addItems(sorted(self.policy_engine.policy.get("roles", {}).keys()))
+        self.role_combo.setCurrentText(self.policy_engine.current_role)
+        self.role_combo.currentTextChanged.connect(self._on_role_changed)
+        toolbar.addWidget(self.role_combo)
     
     def create_statusbar(self):
         """Create status bar"""
@@ -318,6 +354,135 @@ class MainWindow(QMainWindow):
         # Add GPU info to status bar
         gpu_label = QLabel(f"  {self.gpu_info}  ")
         self.statusBar().addPermanentWidget(gpu_label)
+        self.role_status_label = QLabel(f"Role: {self.policy_engine.current_role}")
+        self.statusBar().addPermanentWidget(self.role_status_label)
+
+    def _on_role_changed(self, role: str):
+        """Handle role changes from toolbar selector."""
+        if self._policy_sync_in_progress:
+            return
+
+        previous = self.policy_engine.current_role
+        if role == previous:
+            return
+
+        token = None
+        if role in {"instructor", "research"}:
+            token, ok = QInputDialog.getText(
+                self,
+                "Role Authentication",
+                f"Enter passphrase for '{role}' role:",
+                QLineEdit.Password,
+            )
+            if not ok:
+                self._set_role_combo(previous)
+                return
+
+        try:
+            self.policy_engine.set_role(role, auth_token=token)
+        except Exception as exc:
+            QMessageBox.warning(self, "Role Switch Failed", str(exc))
+            self._set_role_combo(previous)
+            return
+
+        self.role_status_label.setText(f"Role: {self.policy_engine.current_role}")
+        self._refresh_policy_ui()
+
+        if self.project:
+            self.project.add_audit_entry(
+                {
+                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                    "role": self.policy_engine.current_role,
+                    "action": "role_change",
+                    "image": self._current_image_name(),
+                    "context": {"from": previous, "to": role},
+                    "reason": "",
+                    "outcome": "allowed",
+                }
+            )
+
+    def _set_role_combo(self, role: str):
+        self._policy_sync_in_progress = True
+        self.role_combo.setCurrentText(role)
+        self._policy_sync_in_progress = False
+
+    def _refresh_policy_ui(self):
+        """Refresh UI enable/disable states based on current policy role."""
+        self.role_status_label.setText(f"Role: {self.policy_engine.current_role}")
+
+        manual_gate = self.policy_engine.gate("set_segmentation_params")
+        self.segmentation_panel.set_parameter_controls_enabled(
+            manual_gate.allowed, manual_gate.message
+        )
+
+        run_gate = self.policy_engine.gate(
+            "skip_tournament",
+            context={"tournament_completed": self._is_tournament_complete_for_current_image()},
+        )
+        self.segmentation_panel.set_run_action_enabled(run_gate.allowed, run_gate.message)
+
+        batch_gate = self.policy_engine.gate(
+            "batch_without_preview",
+            context={"preview_completed": self._has_segmentation_preview()},
+        )
+        self.segmentation_panel.set_batch_action_enabled(batch_gate.allowed, batch_gate.message)
+
+        raw_gate = self.policy_engine.gate("export_raw_masks")
+        self.export_raw_masks_action.setEnabled(raw_gate.allowed)
+        self.export_raw_masks_action.setToolTip("" if raw_gate.allowed else raw_gate.message)
+
+        allowed_recipes = self.policy_engine.role_config.get("allowed_recipes", [])
+        if allowed_recipes == "ALL":
+            self.analysis_panel.set_allowed_recipes(
+                ["nuclear_intensity", "puncta_counting", "colocalization"]
+            )
+        elif isinstance(allowed_recipes, list) and allowed_recipes:
+            self.analysis_panel.set_allowed_recipes(allowed_recipes)
+
+    def _is_tournament_complete_for_current_image(self) -> bool:
+        if self.current_image_index is None:
+            return False
+        if self.current_image_index in self._tournament_completed_indices:
+            return True
+
+        if not self.project:
+            return False
+        img_data = self.project.get_image(self.current_image_index)
+        if not img_data:
+            return False
+        for item in img_data.segmentation_history:
+            if item.get("source") == "ab_tournament":
+                return True
+        return False
+
+    def _has_segmentation_preview(self) -> bool:
+        if self.current_image_index is None or not self.project:
+            return False
+        img_data = self.project.get_image(self.current_image_index)
+        if not img_data:
+            return False
+        return len(img_data.segmentation_history) > 0
+
+    def _current_image_name(self) -> Optional[str]:
+        if self.current_image_index is None or not self.project:
+            return None
+        img_data = self.project.get_image(self.current_image_index)
+        return img_data.filename if img_data else None
+
+    def _log_gate_result(self, gate_result, image_name: Optional[str]):
+        """Write gate checks to project audit log."""
+        self._latest_gate_entry = dict(gate_result.log_entry)
+        self._latest_gate_entry["image"] = image_name
+        self._latest_gate_entry.setdefault("reason", "")
+        if self.project:
+            self.project.add_audit_entry(dict(self._latest_gate_entry))
+
+    def _log_reason_for_latest_gate(self, reason: str):
+        if self._latest_gate_entry is None:
+            return
+        self._latest_gate_entry["reason"] = reason
+        if self.project:
+            self.project.add_audit_entry(dict(self._latest_gate_entry))
     
     # Project management methods
     def new_project(self):
@@ -327,8 +492,10 @@ class MainWindow(QMainWindow):
         
         self.project = Project()
         self.current_image_index = None
+        self._tournament_completed_indices.clear()
         self.project_panel.clear_images()
         self.project_changed.emit()
+        self._refresh_policy_ui()
         self.statusBar().showMessage("New project created", 3000)
     
     def open_project(self):
@@ -347,6 +514,7 @@ class MainWindow(QMainWindow):
             try:
                 self.project = Project(filepath)
                 self.current_image_index = None
+                self._tournament_completed_indices.clear()
                 
                 # Populate project panel
                 self.project_panel.clear_images()
@@ -355,6 +523,7 @@ class MainWindow(QMainWindow):
                     self.project_panel.add_image(img_data.filename, has_segmentation=has_seg)
                 
                 self.project_changed.emit()
+                self._refresh_policy_ui()
                 self.statusBar().showMessage(f"Opened project: {filepath}", 3000)
             except Exception as e:
                 QMessageBox.critical(
@@ -485,6 +654,8 @@ class MainWindow(QMainWindow):
                 # Display in viewer
                 self.image_viewer.set_image(image, metadata)
                 self.segmentation_panel.set_image(image, metadata)
+                self.current_image_data = image
+                self.current_metadata = metadata
                 
                 self.image_loaded.emit(img_index)
                 self.statusBar().showMessage(
@@ -566,6 +737,8 @@ class MainWindow(QMainWindow):
                     
                     self.image_viewer.set_image(image, metadata)
                     self.segmentation_panel.set_image(image, metadata)
+                    self.current_image_data = image
+                    self.current_metadata = metadata
                     self.image_loaded.emit(img_index)
                     
                     self.statusBar().showMessage(f"Imported: {img_data.filename} (first position)", 3000)
@@ -660,6 +833,8 @@ class MainWindow(QMainWindow):
                 image, metadata = TIFFLoader.load_metamorph_nd(nd_filepath, stage=0, timepoint=0)
                 self.image_viewer.set_image(image, metadata)
                 self.segmentation_panel.set_image(image, metadata)
+                self.current_image_data = image
+                self.current_metadata = metadata
                 self.image_loaded.emit(first_index)
             
             self.statusBar().showMessage(f"Imported {count} images from Metamorph series", 5000)
@@ -973,6 +1148,8 @@ class MainWindow(QMainWindow):
             # Display in viewer
             self.image_viewer.set_image(image, metadata)
             self.segmentation_panel.set_image(image, metadata)
+            self.current_image_data = image
+            self.current_metadata = metadata
             
             # Load existing segmentation if available
             if img_data.current_segmentation_id is not None:
@@ -983,6 +1160,7 @@ class MainWindow(QMainWindow):
                 self.image_viewer.clear_mask()
             
             self.image_loaded.emit(index)
+            self._refresh_policy_ui()
             self.statusBar().showMessage(
                 f"Loaded: {img_data.filename}", 3000
             )
@@ -1040,6 +1218,11 @@ class MainWindow(QMainWindow):
             self.image_viewer.clear()
         elif self.current_image_index is not None and self.current_image_index > index:
             self.current_image_index -= 1
+
+        self._tournament_completed_indices = {
+            i if i < index else i - 1 for i in self._tournament_completed_indices if i != index
+        }
+        self._refresh_policy_ui()
         
         self.statusBar().showMessage("Image removed from project", 2000)
     
@@ -1048,6 +1231,23 @@ class MainWindow(QMainWindow):
         if not self.project:
             QMessageBox.warning(self, "No Project", "Please create or open a project first.")
             return
+
+        export_context = self._project_qc_context()
+        export_gate = self.policy_engine.gate("export", context=export_context)
+        self._log_gate_result(export_gate, image_name=None)
+        if not export_gate.allowed:
+            self._show_export_blocked_summary(export_gate.message, export_context)
+            return
+        if export_gate.require_reason:
+            reason, ok = QInputDialog.getText(
+                self,
+                "Export Override Reason",
+                "QC warnings detected. Please provide a reason for export:",
+                QLineEdit.Normal,
+            )
+            if not ok or not reason.strip():
+                return
+            self._log_reason_for_latest_gate(reason.strip())
         
         # Get aggregated measurements from project
         measurements_df = self.project.get_aggregated_measurements()
@@ -1097,9 +1297,126 @@ class MainWindow(QMainWindow):
                 f"Could not export measurements:\n{str(e)}"
             )
 
+    def export_raw_masks(self):
+        """Export raw mask files from project masks directory."""
+        if not self.project:
+            QMessageBox.warning(self, "No Project", "Please create or open a project first.")
+            return
+
+        gate = self.policy_engine.gate("export_raw_masks")
+        self._log_gate_result(gate, image_name=None)
+        if not gate.allowed:
+            QMessageBox.warning(self, "Action Blocked", gate.message)
+            return
+
+        if not self.project.project_path:
+            QMessageBox.warning(
+                self,
+                "Project Not Saved",
+                "Please save the project before exporting raw masks.",
+            )
+            return
+
+        project_dir = Path(self.project.project_path).parent
+        masks_dir = project_dir / "masks"
+        if not masks_dir.exists():
+            QMessageBox.warning(self, "No Masks", "No masks directory found for this project.")
+            return
+
+        export_dir = QFileDialog.getExistingDirectory(self, "Select Export Folder")
+        if not export_dir:
+            return
+
+        export_path = Path(export_dir)
+        copied = 0
+        for mask_file in masks_dir.glob("*.npz"):
+            target = export_path / mask_file.name
+            target.write_bytes(mask_file.read_bytes())
+            copied += 1
+
+        QMessageBox.information(self, "Export Complete", f"Exported {copied} raw mask files.")
+
+    def _project_qc_context(self) -> Dict:
+        """Build project-level QC context used by policy gates."""
+        context = {
+            "qc_status": "PASS",
+            "failing_images": [],
+            "warning_images": [],
+        }
+        if not self.project:
+            return context
+
+        for img in self.project.images:
+            n_nuclei = len(img.measurements_df) if img.measurements_df is not None else 0
+            flagged = len(img.qc_flags)
+            flagged_pct = (flagged / n_nuclei * 100.0) if n_nuclei > 0 else 0.0
+
+            if flagged_pct >= 10.0:
+                context["failing_images"].append(
+                    {
+                        "image": img.filename,
+                        "nuclei": n_nuclei,
+                        "flagged": flagged,
+                        "flagged_pct": flagged_pct,
+                    }
+                )
+            elif flagged > 0 or n_nuclei == 0:
+                context["warning_images"].append(
+                    {
+                        "image": img.filename,
+                        "nuclei": n_nuclei,
+                        "flagged": flagged,
+                        "flagged_pct": flagged_pct,
+                    }
+                )
+
+        if context["failing_images"]:
+            context["qc_status"] = "FAIL"
+        elif context["warning_images"]:
+            context["qc_status"] = "WARN"
+        return context
+
+    def _show_export_blocked_summary(self, message: str, export_context: Dict):
+        """Show user-facing export block summary with remediation hints."""
+        lines = [message, ""]
+
+        failing = export_context.get("failing_images", [])
+        warning = export_context.get("warning_images", [])
+        if failing:
+            lines.append("Failing images:")
+            for item in failing:
+                lines.append(
+                    f"- {item['image']}: {item['flagged']} flagged "
+                    f"({item['flagged_pct']:.1f}%, nuclei={item['nuclei']})"
+                )
+        if warning:
+            lines.append("")
+            lines.append("Warnings:")
+            for item in warning[:8]:
+                lines.append(
+                    f"- {item['image']}: {item['flagged']} flagged "
+                    f"({item['flagged_pct']:.1f}%, nuclei={item['nuclei']})"
+                )
+
+        lines.append("")
+        lines.append("Suggested actions:")
+        lines.append("1. Re-run segmentation or A/B optimization on failing images.")
+        lines.append("2. Resolve QC flags before attempting export again.")
+
+        QMessageBox.warning(self, "Export Blocked", "\n".join(lines))
+
     def batch_process(self):
         """Launch batch processing dialog"""
         from gui.batch_processing import BatchProcessingDialog
+
+        gate = self.policy_engine.gate(
+            "batch_without_preview",
+            context={"preview_completed": self._has_segmentation_preview()},
+        )
+        self._log_gate_result(gate, image_name=self._current_image_name())
+        if not gate.allowed:
+            QMessageBox.warning(self, "Action Blocked", gate.message)
+            return
         
         dialog = BatchProcessingDialog(self)
         
@@ -1224,6 +1541,22 @@ class MainWindow(QMainWindow):
         self.analysis_panel.set_plugin_info(plugin_info)
         
         self.statusBar().showMessage(f"Reloaded {count} plugins", 3000)
+
+    def _on_recipe_selected(self, recipe_name: str):
+        """Gate analysis recipe selection based on role policy."""
+        gate = self.policy_engine.gate(f"use_recipe:{recipe_name}")
+        self._log_gate_result(gate, image_name=self._current_image_name())
+        if gate.allowed:
+            return
+
+        QMessageBox.warning(self, "Recipe Locked", gate.message)
+        allowed = self.policy_engine.role_config.get("allowed_recipes", [])
+        fallback = "nuclear_intensity"
+        if isinstance(allowed, list) and allowed:
+            fallback = allowed[0]
+        self.analysis_panel.recipe_combo.blockSignals(True)
+        self.analysis_panel.recipe_combo.setCurrentText(fallback)
+        self.analysis_panel.recipe_combo.blockSignals(False)
     
     def show_settings(self):
         """Show settings dialog"""
@@ -1231,6 +1564,7 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             # Settings were saved, apply any immediate changes
             self._apply_settings()
+            self._refresh_policy_ui()
     
     def _apply_settings(self):
         """Apply settings that require immediate action"""
@@ -1252,6 +1586,9 @@ class MainWindow(QMainWindow):
             # Update analysis panel with new plugins
             plugin_info = self.plugin_loader.get_all_plugin_info()
             self.analysis_panel.set_plugin_info(plugin_info)
+
+        AccessibilityManager.load_from_settings()
+        AccessibilityManager.apply_ui_scale(QApplication.instance())
     
     def show_help(self):
         """Show documentation in default browser"""
@@ -1328,11 +1665,78 @@ class MainWindow(QMainWindow):
         title = self.windowTitle()
         if not title.endswith('*'):
             self.setWindowTitle(title + ' *')
+
+    def _on_optimize_parameters(self):
+        """Launch A/B tournament parameter optimizer for current image."""
+        if self.current_image_index is None or not self.project:
+            QMessageBox.warning(self, "No Image", "Please load an image first.")
+            return
+
+        img_data = self.project.get_image(self.current_image_index)
+        if img_data is None:
+            return
+
+        if self.current_image_data is None:
+            try:
+                image, metadata = TIFFLoader.load_tiff(img_data.path)
+                self.current_image_data = image
+                self.current_metadata = metadata
+            except Exception as exc:
+                QMessageBox.critical(self, "Error", f"Could not load image: {exc}")
+                return
+
+        panel = ABTournamentPanel(
+            image=self.current_image_data,
+            metadata=self.current_metadata,
+            channels=self.segmentation_panel.get_parameters().get("channels", [0, 0]),
+            gpu_available=self.gpu_available,
+            parent=self,
+        )
+
+        if panel.exec() != QDialog.Accepted:
+            return
+
+        winner_params = panel.get_winner_params()
+        if not winner_params:
+            return
+
+        gate = self.policy_engine.gate("edit_winning_params", context={"deviation": 0.0})
+        self._log_gate_result(gate, image_name=self._current_image_name())
+        if not gate.allowed:
+            QMessageBox.warning(self, "Action Blocked", gate.message)
+            return
+
+        merged_params = self.segmentation_panel.get_parameters()
+        merged_params.update(winner_params)
+        merged_params["engine"] = "cellpose"
+        self.segmentation_panel.set_parameters(merged_params)
+
+        tournament_record = {
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "source": "ab_tournament",
+            "winner_params": winner_params,
+            "audit_log": panel.get_audit_log(),
+        }
+        img_data.segmentation_history.append(tournament_record)
+        self._tournament_completed_indices.add(self.current_image_index)
+        self._mark_dirty()
+        self._refresh_policy_ui()
+
+        self.statusBar().showMessage("A/B tournament complete. Winner parameters applied.", 5000)
     
     def _on_run_segmentation(self, parameters: Dict):
         """Handle segmentation run request"""
         if self.current_image_index is None:
             QMessageBox.warning(self, "No Image", "Please import an image first.")
+            return
+
+        tournament_gate = self.policy_engine.gate(
+            "skip_tournament",
+            context={"tournament_completed": self._is_tournament_complete_for_current_image()},
+        )
+        self._log_gate_result(tournament_gate, image_name=self._current_image_name())
+        if not tournament_gate.allowed:
+            QMessageBox.warning(self, "Action Blocked", tournament_gate.message)
             return
         
         # Get current image data
@@ -1353,6 +1757,11 @@ class MainWindow(QMainWindow):
             parameters=parameters,
             gpu_available=self.gpu_available
         )
+        self.segmentation_worker.finished.connect(self._on_segmentation_finished)
+        self.segmentation_worker.error.connect(self._on_segmentation_error)
+        self.segmentation_worker.status.connect(self.statusBar().showMessage)
+        self.segmentation_panel.set_running(True)
+        self.segmentation_worker.start()
     def _on_segmentation_finished(self, masks: np.ndarray, results: Dict):
         """Handle segmentation completion"""
         # Update UI
@@ -1390,7 +1799,9 @@ class MainWindow(QMainWindow):
                 
                 # Persist mask data to project directory
                 self._save_segmentation_mask(img_data, masks)
+                self._tournament_completed_indices.add(self.current_image_index)
         
+        self._refresh_policy_ui()
         self.statusBar().showMessage("Segmentation complete - Ready for analysis", 5000)
     
     def _save_segmentation_mask(self, img_data, masks: np.ndarray):
@@ -1433,6 +1844,15 @@ class MainWindow(QMainWindow):
                 "No Images",
                 "Please add images to the project first."
             )
+            return
+
+        batch_gate = self.policy_engine.gate(
+            "batch_without_preview",
+            context={"preview_completed": self._has_segmentation_preview()},
+        )
+        self._log_gate_result(batch_gate, image_name=None)
+        if not batch_gate.allowed:
+            QMessageBox.warning(self, "Action Blocked", batch_gate.message)
             return
         
         # Ask for confirmation
@@ -1545,6 +1965,7 @@ class MainWindow(QMainWindow):
             f"{msg_text}\n\n{details}"
         )
         
+        self._refresh_policy_ui()
         self.statusBar().showMessage(
             f"Batch segmentation complete: {successful}/{total} successful", 5000
         )
@@ -1670,8 +2091,8 @@ class MainWindow(QMainWindow):
         if self.current_image_index is not None:
             img_data = self.project.get_image(self.current_image_index)
             if img_data:
-                # Store measurements (simplified - in full version might serialize to file)
-                img_data.measurements = measurements_df.to_dict()
+                img_data.measurements_df = measurements_df
+                self._mark_dirty()
         
         self.statusBar().showMessage(
             f"Measurements complete: {len(measurements_df)} nuclei analyzed", 5000
@@ -1795,6 +2216,8 @@ class MainWindow(QMainWindow):
                     self.current_image_index = last_idx
                     self.image_viewer.set_image(image, metadata)
                     self.segmentation_panel.set_image(image, metadata)
+                    self.current_image_data = image
+                    self.current_metadata = metadata
                     self.image_loaded.emit(last_idx)
                 except Exception as e:
                     print(f"Error loading last image: {e}")

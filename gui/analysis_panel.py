@@ -6,11 +6,13 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QLabel, QGroupBox, QCheckBox, QRadioButton,
                                QTableWidget, QTableWidgetItem, QHeaderView,
                                QProgressBar, QTextEdit, QSplitter, QFileDialog,
-                               QButtonGroup, QListWidget, QListWidgetItem)
+                               QButtonGroup, QListWidget, QListWidgetItem, QComboBox)
 from PySide6.QtCore import Signal, Qt
 import pandas as pd
 import numpy as np
 from typing import Optional, Dict, List
+
+from gui.accessibility import AccessibilityManager
 
 
 class AnalysisPanel(QWidget):
@@ -18,6 +20,7 @@ class AnalysisPanel(QWidget):
     
     run_measurements = Signal(dict)  # Emit configuration dict
     refresh_plugins_requested = Signal()  # Signal to request plugin refresh
+    recipe_selected = Signal(str)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,6 +58,18 @@ class AnalysisPanel(QWidget):
         workflow_layout.addStretch()
         workflow_group.setLayout(workflow_layout)
         config_layout.addWidget(workflow_group)
+
+        # Recipe selection
+        recipe_group = QGroupBox("Recipe")
+        recipe_layout = QHBoxLayout()
+        recipe_layout.addWidget(QLabel("Analysis Recipe:"))
+        self.recipe_combo = QComboBox()
+        self.recipe_combo.addItems(["nuclear_intensity", "puncta_counting", "colocalization"])
+        self.recipe_combo.currentTextChanged.connect(self.recipe_selected.emit)
+        recipe_layout.addWidget(self.recipe_combo)
+        recipe_layout.addStretch()
+        recipe_group.setLayout(recipe_layout)
+        config_layout.addWidget(recipe_group)
         
         # Measurement categories
         categories_group = QGroupBox("Measurement Categories")
@@ -158,6 +173,7 @@ class AnalysisPanel(QWidget):
         # Main layout
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(splitter)
+        AccessibilityManager.apply_accessible_names(self)
     
     def _refresh_plugins(self):
         """Refresh plugin list from PluginLoader"""
@@ -183,7 +199,8 @@ class AnalysisPanel(QWidget):
             'pool_by_group': self.pool_check.isChecked(),
             'enabled_categories': [],
             'enabled_plugins': [],
-            'assign_phases': self.cell_cycle_check.isChecked()
+            'assign_phases': self.cell_cycle_check.isChecked(),
+            'recipe': self.recipe_combo.currentText(),
         }
         
         # Gather enabled categories
@@ -204,6 +221,16 @@ class AnalysisPanel(QWidget):
         
         # Emit signal
         self.run_measurements.emit(config)
+
+    def set_allowed_recipes(self, recipes: List[str]):
+        """Set available recipes without losing current selection when possible."""
+        current = self.recipe_combo.currentText()
+        self.recipe_combo.blockSignals(True)
+        self.recipe_combo.clear()
+        self.recipe_combo.addItems(recipes)
+        if current in recipes:
+            self.recipe_combo.setCurrentText(current)
+        self.recipe_combo.blockSignals(False)
     
     def set_measurements(self, df: pd.DataFrame):
         """Display measurement results"""

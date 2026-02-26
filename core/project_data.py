@@ -69,6 +69,7 @@ class Project:
         self.images: List[ImageData] = []
         self.settings = ProjectSettings()
         self.export_templates: Dict[str, Dict] = {}
+        self.audit_log: List[Dict] = []
         
         # Storage backend
         self.storage_backend = "json"  # "json" or "sqlite"
@@ -154,6 +155,7 @@ class Project:
             "storage_backend": self.storage_backend,
             "settings": asdict(self.settings),
             "export_templates": self.export_templates,
+            "audit_log": self.audit_log,
             "images": [
                 {
                     "path": img.path,
@@ -244,6 +246,7 @@ class Project:
         self.settings = ProjectSettings(**settings_dict)
         
         self.export_templates = data.get("export_templates", {})
+        self.audit_log = data.get("audit_log", [])
         
         # Load images
         project_dir = Path(self.project_path).parent
@@ -277,6 +280,26 @@ class Project:
         self._save_sqlite()
         
         print(f"Migration complete. Database saved to: {db_path}")
+
+    def add_audit_entry(self, entry: Dict[str, Any]):
+        """Append a project-level audit entry and persist to JSONL when possible."""
+        self.audit_log.append(entry)
+        self.modified_date = datetime.now().isoformat()
+        self._append_audit_jsonl(entry)
+
+    def _append_audit_jsonl(self, entry: Dict[str, Any]):
+        """Append one audit entry to project_audit.jsonl."""
+        if not self.project_path:
+            return
+
+        try:
+            project_dir = Path(self.project_path).parent
+            project_dir.mkdir(parents=True, exist_ok=True)
+            audit_path = project_dir / "project_audit.jsonl"
+            with open(audit_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\\n")
+        except Exception as exc:
+            print(f"Warning: failed to append audit entry: {exc}")
     
     def _init_sqlite_database(self, db_path: str):
         """Initialize SQLite database schema"""

@@ -8,9 +8,11 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QSlider, QCheckBox, QComboBox, QPushButton,
                                QSpinBox, QGroupBox, QScrollArea)
 from PySide6.QtCore import Qt, Signal, QRectF
-from PySide6.QtGui import QPainter
+from PySide6.QtGui import QColor, QPainter
 import pyqtgraph as pg
 from typing import Optional, List, Tuple, Dict
+
+from gui.accessibility import AccessibilityManager
 
 
 class ImageViewer(QWidget):
@@ -43,6 +45,9 @@ class ImageViewer(QWidget):
         self.mask_visible = True
         self.mask_opacity = 0.5
         self.selected_nucleus_id: Optional[int] = None
+        self.mask_style_mode = "instance"  # "instance" or "solid"
+        self.mask_style_color = (0, 170, 0)
+        self._last_nucleus_count = 0
         
         # Display settings
         self.auto_contrast = True
@@ -79,6 +84,7 @@ class ImageViewer(QWidget):
         # Enable mouse interactions
         self.img_item.setCompositionMode(QPainter.CompositionMode_SourceOver)
         self.view_box.scene().sigMouseClicked.connect(self._on_mouse_clicked)
+        self.view_box.sigRangeChanged.connect(self._on_view_range_changed)
         
         layout.addWidget(self.image_widget, stretch=4)
         
@@ -166,6 +172,8 @@ class ImageViewer(QWidget):
         scroll_area.setMaximumWidth(350)
         
         layout.addWidget(scroll_area, stretch=1)
+        self.setAccessibleName("Image Viewer")
+        AccessibilityManager.apply_accessible_names(self)
     
     def set_image(self, image: np.ndarray, metadata: Dict):
         """
@@ -216,6 +224,7 @@ class ImageViewer(QWidget):
         # Display first slice
         self._update_display()
         self.fit_to_window()
+        self._update_accessible_description()
     
     def set_mask(self, mask: np.ndarray):
         """
@@ -226,15 +235,33 @@ class ImageViewer(QWidget):
         """
         self.mask_data = mask
         self.selected_nucleus_id = None
+        self._last_nucleus_count = self._count_nuclei(mask)
         self._invalidate_mask_cache(clear_lut=True)
         if self.mask_visible:
             self._update_mask_overlay()
+        self._update_accessible_description()
     
     def clear_mask(self):
         """Clear the mask overlay"""
         self.mask_data = None
         self.selected_nucleus_id = None
+        self._last_nucleus_count = 0
         self._invalidate_mask_cache(clear_lut=False)
+        self.mask_item.clear()
+        self._update_accessible_description()
+
+    def clear(self):
+        """Clear image and all overlays."""
+        self.image_data = None
+        self.metadata = {}
+        self.mask_data = None
+        self.selected_nucleus_id = None
+        self.visible_channels = []
+        self.channel_names = []
+        self._last_nucleus_count = 0
+        self._invalidate_image_cache()
+        self._invalidate_mask_cache(clear_lut=False)
+        self.img_item.clear()
         self.mask_item.clear()
     
     def highlight_nucleus(self, nucleus_id: int):
@@ -426,6 +453,15 @@ class ImageViewer(QWidget):
         if max_id == 0:
             return np.zeros((height, width, 4), dtype=np.uint8)
 
+        if self.mask_style_mode == "solid":
+            rgba = np.zeros((height, width, 4), dtype=np.uint8)
+            positive = mask > 0
+            rgba[positive, 0] = self.mask_style_color[0]
+            rgba[positive, 1] = self.mask_style_color[1]
+            rgba[positive, 2] = self.mask_style_color[2]
+            rgba[positive, 3] = 170
+            return rgba
+
         # Build/extend deterministic LUT once; avoid reseeding global RNG per redraw.
         if self._mask_lut is None or self._mask_lut.shape[0] <= max_id:
             lut = np.zeros((max_id + 1, 4), dtype=np.uint8)
@@ -475,28 +511,11 @@ class ImageViewer(QWidget):
     
     def _get_default_colors(self, n_channels: int) -> List[Tuple[int, int, int]]:
         """Get default colors for channels"""
-        default_colors = [
-            (255, 0, 0),    # Red
-            (0, 255, 0),    # Green
-            (0, 0, 255),    # Blue
-            (255, 255, 0),  # Yellow
-            (255, 0, 255),  # Magenta
-            (0, 255, 255),  # Cyan
-            (255, 255, 255),# White
-        ]
-        
-        colors = []
-        for i in range(n_channels):
-            if i < len(default_colors):
-                colors.append(default_colors[i])
-            else:
-                # Deterministic high-contrast colors without mutating global RNG state
-                colors.append((
-                    int((37 * i) % 128 + 128),
-                    int((67 * i) % 128 + 128),
-                    int((97 * i) % 128 + 128),
-                ))
-        
+        palette_hex = AccessibilityManager.get_channel_colors(n_channels)
+        colors: List[Tuple[int, int, int]] = []
+        for color_code in palette_hex:
+            qcolor = QColor(color_code)
+            colors.append((qcolor.red(), qcolor.green(), qcolor.blue()))
         return colors
     
     def _update_slice_label(self):
@@ -514,6 +533,7 @@ class ImageViewer(QWidget):
         self._invalidate_mask_cache(clear_lut=False)
         self._update_display()
         self.slice_changed.emit(value)
+        self._update_accessible_description()
     
     def _on_channel_toggled(self, channel_idx: int, checked: bool):
         """Handle channel checkbox toggle"""
@@ -529,6 +549,7 @@ class ImageViewer(QWidget):
     def _on_dna_channel_changed(self, index: int):
         """Handle DNA channel selection"""
         self.dna_channel_index = index
+        self._update_accessible_description()
     
     def _on_contrast_changed(self, channel_idx: int, value: int, min_or_max: str):
         """Handle contrast adjustment"""
@@ -580,6 +601,21 @@ class ImageViewer(QWidget):
                 if self.mask_visible:
                     self._update_mask_overlay()
                 self.nucleus_selected.emit(nucleus_id)
+
+    def _on_view_range_changed(self, *_args):
+        """Emit standardized view changes and refresh accessibility summary."""
+        try:
+            x_range, y_range = self.view_box.viewRange()
+            rect = QRectF(
+                float(x_range[0]),
+                float(y_range[0]),
+                float(x_range[1] - x_range[0]),
+                float(y_range[1] - y_range[0]),
+            )
+            self.view_changed.emit(rect)
+        except Exception:
+            pass
+        self._update_accessible_description()
     
     def fit_to_window(self):
         """Fit the image to the window"""
@@ -607,3 +643,57 @@ class ImageViewer(QWidget):
     def get_current_slice(self) -> int:
         """Get the current Z-slice index"""
         return self.current_slice
+
+    def set_mask_style(self, mode: str = "instance", color: str = "#00AA00"):
+        """Set mask rendering style for overlay comparisons."""
+        self.mask_style_mode = mode if mode in {"instance", "solid"} else "instance"
+        qcolor = QColor(color)
+        if qcolor.isValid():
+            self.mask_style_color = (qcolor.red(), qcolor.green(), qcolor.blue())
+        self._invalidate_mask_cache(clear_lut=True)
+        if self.mask_data is not None and self.mask_visible:
+            self._update_mask_overlay()
+
+    def _update_accessible_description(self):
+        if self.image_data is None:
+            return
+
+        channel_name = "N/A"
+        if self.channel_names:
+            if self.dna_channel_index is not None and 0 <= self.dna_channel_index < len(self.channel_names):
+                channel_name = self.channel_names[self.dna_channel_index]
+            elif self.visible_channels:
+                idx = self.visible_channels[0]
+                if 0 <= idx < len(self.channel_names):
+                    channel_name = self.channel_names[idx]
+                else:
+                    channel_name = self.channel_names[0]
+            else:
+                channel_name = self.channel_names[0]
+
+        zoom_percent = 100.0
+        try:
+            x_range, _ = self.view_box.viewRange()
+            width = float(self.image_data.shape[-1])
+            visible_width = max(1e-6, float(x_range[1] - x_range[0]))
+            zoom_percent = (width / visible_width) * 100.0
+        except Exception:
+            pass
+
+        description = AccessibilityManager.build_segmentation_description(
+            nucleus_count=int(self._last_nucleus_count),
+            channel_name=channel_name,
+            zoom_percent=zoom_percent,
+            slice_index=self.current_slice,
+        )
+        self.setAccessibleDescription(description)
+
+    @staticmethod
+    def _count_nuclei(mask: Optional[np.ndarray]) -> int:
+        if mask is None:
+            return 0
+        arr = np.asarray(mask)
+        if arr.size == 0:
+            return 0
+        labels = np.unique(arr)
+        return int(np.sum(labels > 0))

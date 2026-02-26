@@ -13,6 +13,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
 
+from gui.accessibility import AccessibilityManager
+
 
 class QCPanel(QWidget):
     """Quality control panel for DNA intensity analysis"""
@@ -109,6 +111,7 @@ class QCPanel(QWidget):
         
         flagged_group.setLayout(flagged_layout)
         layout.addWidget(flagged_group, stretch=1)
+        AccessibilityManager.apply_accessible_names(self)
     
     def set_qc_results(self, results: dict, current_params: dict):
         """Display QC results"""

@@ -16,6 +16,7 @@ from datetime import datetime
 
 from workers.segmentation_worker import BatchSegmentationWorker
 from core.project_data import ImageData
+from gui.accessibility import AccessibilityManager
 
 
 class BatchProcessingDialog(QDialog):
@@ -154,6 +155,7 @@ class BatchProcessingDialog(QDialog):
         button_layout.addWidget(self.close_btn)
         
         layout.addLayout(button_layout)
+        AccessibilityManager.apply_accessible_names(self)
     
     def _add_files(self):
         """Add files to batch"""
