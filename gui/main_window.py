@@ -17,12 +17,14 @@ import datetime
 from core.project_data import Project, ImageData
 from core.image_io import TIFFLoader
 from core.plugin_loader import PluginLoader
+from core.policy_engine import PolicyEngine
 from gui.image_viewer import ImageViewer
 from gui.segmentation_panel import SegmentationPanel
 from gui.analysis_panel import AnalysisPanel
 from gui.visualization_panel import VisualizationPanel
 from gui.settings_dialog import SettingsDialog
 from gui.project_panel import ProjectPanel
+from gui.accessibility import AccessibilityManager
 from workers.segmentation_worker import SegmentationWorker, DiameterEstimationWorker, BatchSegmentationWorker
 from workers.measurement_worker import MeasurementWorker
 
@@ -50,6 +52,12 @@ class MainWindow(QMainWindow):
         # Plugin loader
         self.plugin_loader = PluginLoader()
         self.plugin_loader.load_all_plugins()
+
+        # Policy engine (role-based access control)
+        self.policy_engine = PolicyEngine()
+
+        # Accessibility manager
+        self.accessibility = AccessibilityManager.instance()
         
         # Quality dashboard reference
         self.quality_dashboard = None
@@ -331,6 +339,11 @@ class MainWindow(QMainWindow):
         # Add GPU info to status bar
         gpu_label = QLabel(f"  {self.gpu_info}  ")
         self.statusBar().addPermanentWidget(gpu_label)
+
+        # Role indicator
+        self._role_label = QLabel(f"  Role: {self.policy_engine.current_role}  ")
+        self._role_label.setToolTip("Current user role. Change in Settings → Role.")
+        self.statusBar().addPermanentWidget(self._role_label)
     
     # Project management methods
     def new_project(self):
