@@ -230,6 +230,16 @@ class SegmentationPanel(QWidget):
         run_buttons_layout.addWidget(self.batch_button, stretch=1)
         
         layout.addLayout(run_buttons_layout)
+
+        # A/B tournament optimisation button
+        self.tournament_button = QPushButton("🔬 Optimize Parameters (A/B)")
+        self.tournament_button.setToolTip(
+            "Launch the A/B tournament to find the best Cellpose parameters "
+            "for this image by comparing segmentation results side-by-side."
+        )
+        self.tournament_button.setMinimumHeight(36)
+        self.tournament_button.clicked.connect(self._on_tournament_clicked)
+        layout.addWidget(self.tournament_button)
         
         # Progress
         self.progress_bar = QProgressBar()
@@ -455,6 +465,36 @@ class SegmentationPanel(QWidget):
         """Handle batch segmentation button click"""
         params = self.get_parameters()
         self.run_batch_segmentation.emit(params)
+
+    def _on_tournament_clicked(self):
+        """Launch the A/B tournament parameter optimiser."""
+        if self.current_image is None:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "No Image", "Please load an image before running the tournament.")
+            return
+
+        try:
+            from gui.ab_tournament_panel import ABTournamentPanel
+            panel = ABTournamentPanel(
+                image=self.current_image,
+                channels=[0, 0],
+                n_candidates=8,
+                gpu_available=self.gpu_available,
+                parent=self,
+            )
+            panel.tournament_complete.connect(self._on_tournament_complete)
+            panel.exec()
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Tournament Error", str(exc))
+
+    def _on_tournament_complete(self, params: dict):
+        """Apply winning tournament parameters to the panel controls."""
+        self.set_parameters(params)
+        self.results_text.setText(
+            "A/B tournament complete — winning parameters applied.\n"
+            + "\n".join(f"  {k}: {v}" for k, v in params.items())
+        )
     
     def _on_load_history(self):
         """Load parameters from history"""
