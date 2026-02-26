@@ -247,6 +247,16 @@ class MainWindow(QMainWindow):
         self.batch_action.setStatusTip("Process multiple images")
         self.batch_action.triggered.connect(self.batch_process)
         
+        self.close_image_action = QAction("Close &Image", self)
+        self.close_image_action.setShortcut(QKeySequence("Ctrl+W"))
+        self.close_image_action.setStatusTip("Close the current image")
+        self.close_image_action.triggered.connect(self.close_current_image)
+        
+        self.close_project_action = QAction("&Close Project", self)
+        self.close_project_action.setShortcut(QKeySequence("Ctrl+Shift+W"))
+        self.close_project_action.setStatusTip("Close the current project")
+        self.close_project_action.triggered.connect(self.close_project)
+        
         self.exit_action = QAction("E&xit", self)
         self.exit_action.setShortcut(QKeySequence.Quit)
         self.exit_action.setStatusTip("Exit the application")
@@ -300,6 +310,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.export_action)
         file_menu.addAction(self.export_raw_masks_action)
         file_menu.addAction(self.batch_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.close_image_action)
+        file_menu.addAction(self.close_project_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
         
@@ -498,6 +511,54 @@ class MainWindow(QMainWindow):
         self._refresh_policy_ui()
         self.statusBar().showMessage("New project created", 3000)
     
+    def close_project(self):
+        """Close the current project"""
+        if self.project and self._check_unsaved_changes():
+            return
+        
+        # Clear everything
+        self.project = None
+        self.current_image_index = None
+        self.current_masks = None
+        self.current_intensity_images = None
+        self.current_measurements = None
+        
+        # Clear UI
+        self.project_panel.clear_images()
+        self.image_viewer.clear()
+        self.segmentation_panel.clear()
+        self.analysis_panel.clear_measurements()
+        self.visualization_panel.clear()
+        
+        # Update window title
+        self.setWindowTitle("Nuclei Segmentation & Analysis")
+        self.dirty = False
+        
+        self.project_changed.emit()
+        self.statusBar().showMessage("Project closed", 3000)
+    
+    def close_current_image(self):
+        """Close the currently displayed image"""
+        if self.current_image_index is None:
+            self.statusBar().showMessage("No image to close", 2000)
+            return
+        
+        # Remove from project
+        if self.project:
+            self.project.remove_image(self.current_image_index)
+            self.project_panel.remove_image(self.current_image_index)
+        
+        # Clear current state
+        self.current_image_index = None
+        self.current_masks = None
+        self.current_intensity_images = None
+        
+        # Clear viewer
+        self.image_viewer.clear()
+        self.segmentation_panel.clear()
+        
+        self.statusBar().showMessage("Image closed", 2000)
+    
     def open_project(self):
         """Open an existing project"""
         if self.project and self._check_unsaved_changes():
@@ -671,81 +732,48 @@ class MainWindow(QMainWindow):
             )
     
     def _import_metamorph_nd(self, nd_filepath: str, group: str = "Default"):
-        """Import Metamorph .nd file series"""
+        """Import Metamorph .nd file series - automatically imports all channels"""
         try:
-            # Get info about the .nd file
-            nd_info = TIFFLoader.get_metamorph_info(nd_filepath)
+            # Load the .nd file with all channels automatically
+            image, metadata = TIFFLoader.load_metamorph_nd(nd_filepath, stage=0, timepoint=0)
             
-            n_stages = nd_info['n_stages']
-            n_timepoints = nd_info['n_timepoints']
+            # Create image data entry
+            img_data = ImageData(
+                path=nd_filepath,
+                filename=Path(nd_filepath).name,
+                added_date=str(Path(nd_filepath).stat().st_mtime),
+                channels=metadata.get('channel_names', []),
+                group=group,
+                shape=metadata.get('final_shape'),
+                dtype=metadata.get('dtype'),
+                pixel_size=metadata.get('pixel_size'),
+                bit_depth=metadata.get('bit_depth', 8)
+            )
             
-            # Ask user how to import
-            from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QRadioButton, QButtonGroup
+            # Add to project
+            img_index = self.project.add_image(img_data)
+            self.current_image_index = img_index
             
-            dialog = QDialog(self)
-            dialog.setWindowTitle("Import Metamorph Series")
-            layout = QVBoxLayout(dialog)
+            # Update project panel
+            self.project_panel.add_image(img_data.filename, has_segmentation=False)
             
-            layout.addWidget(QLabel(f"<b>Metamorph Series Detected</b>"))
-            layout.addWidget(QLabel(f"Stages: {n_stages}"))
-            layout.addWidget(QLabel(f"Timepoints: {n_timepoints}"))
-            layout.addWidget(QLabel(f"Total files: {nd_info['n_files']}"))
-            layout.addWidget(QLabel(""))
-            layout.addWidget(QLabel("How would you like to import this series?"))
+            # Display in viewer
+            self.image_viewer.set_image(image, metadata)
+            self.segmentation_panel.set_image(image, metadata)
+            self.image_loaded.emit(img_index)
             
-            button_group = QButtonGroup(dialog)
+            # Log channel info
+            n_channels = metadata.get('n_channels', 1)
+            channel_names = metadata.get('channel_names', [])
+            channel_info = f"{n_channels} channel(s)"
+            if channel_names:
+                channel_info += f": {', '.join(channel_names[:3])}"
+                if len(channel_names) > 3:
+                    channel_info += f"..."
             
-            first_only_radio = QRadioButton("Import first stage/timepoint only")
-            first_only_radio.setChecked(True)
-            button_group.addButton(first_only_radio, 0)
-            layout.addWidget(first_only_radio)
-            
-            all_stages_radio = QRadioButton(f"Import all stages as separate images ({n_stages} images)")
-            button_group.addButton(all_stages_radio, 1)
-            layout.addWidget(all_stages_radio)
-            
-            all_series_radio = QRadioButton(f"Import entire series ({n_stages * n_timepoints} images)")
-            button_group.addButton(all_series_radio, 2)
-            layout.addWidget(all_series_radio)
-            
-            button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-            button_box.accepted.connect(dialog.accept)
-            button_box.rejected.connect(dialog.reject)
-            layout.addWidget(button_box)
-            
-            if dialog.exec() == QDialog.Accepted:
-                choice = button_group.checkedId()
-                
-                if choice == 0:
-                    # Import first only
-                    image, metadata = TIFFLoader.load_metamorph_nd(nd_filepath, stage=0, timepoint=0)
-                    
-                    img_data = ImageData(
-                        path=nd_filepath,
-                        filename=Path(nd_filepath).name,
-                        added_date=str(Path(nd_filepath).stat().st_mtime),
-                        channels=metadata.get('channel_names', []),
-                        group=group,
-                        shape=metadata.get('final_shape'),
-                        dtype=metadata.get('dtype'),
-                        pixel_size=metadata.get('pixel_size'),
-                        bit_depth=metadata.get('bit_depth', 8)
-                    )
-                    
-                    img_index = self.project.add_image(img_data)
-                    self.current_image_index = img_index
-                    
-                    self.image_viewer.set_image(image, metadata)
-                    self.segmentation_panel.set_image(image, metadata)
-                    self.current_image_data = image
-                    self.current_metadata = metadata
-                    self.image_loaded.emit(img_index)
-                    
-                    self.statusBar().showMessage(f"Imported: {img_data.filename} (first position)", 3000)
-                
-                elif choice in [1, 2]:
-                    # Import multiple
-                    self._import_metamorph_batch(nd_filepath, import_all=(choice == 2), group=group)
+            self.statusBar().showMessage(
+                f"Imported: {img_data.filename} ({channel_info})", 3000
+            )
             
         except Exception as e:
             QMessageBox.critical(

@@ -129,7 +129,58 @@ class SegmentationPanel(QWidget):
         # 3D segmentation
         self.do_3d_check = QCheckBox("3D Segmentation (volumetric)")
         self.do_3d_check.setToolTip("Use 3D segmentation for Z-stacks")
+        self.do_3d_check.toggled.connect(self._on_3d_toggled)
         cellpose_layout.addWidget(self.do_3d_check)
+        
+        # 3D Backend selection (only shown when 3D is enabled)
+        self.backend_3d_layout = QHBoxLayout()
+        self.backend_3d_layout.addWidget(QLabel("3D Backend:"))
+        
+        self.backend_3d_combo = QComboBox()
+        self.backend_3d_combo.addItems([
+            'default (slice-by-slice)',
+            'hybrid2d3d (2D + linking)',
+            'true3d (placeholder)'
+        ])
+        self.backend_3d_combo.setToolTip(
+            "Choose 3D segmentation backend:\n"
+            "- default: Process each slice independently\n"
+            "- hybrid2d3d: 2D segmentation + 3D instance linking\n"
+            "- true3d: Full 3D volumetric (not yet implemented)"
+        )
+        self.backend_3d_layout.addWidget(self.backend_3d_combo)
+        
+        cellpose_layout.addLayout(self.backend_3d_layout)
+        
+        # Initially hide 3D backend selection
+        self.backend_3d_combo.hide()
+        for i in range(self.backend_3d_layout.count()):
+            widget = self.backend_3d_layout.itemAt(i).widget()
+            if widget:
+                widget.hide()
+        
+        # Cellpose3 Restoration Mode
+        restoration_layout = QHBoxLayout()
+        restoration_layout.addWidget(QLabel("Restoration Mode:"))
+        
+        self.restoration_combo = QComboBox()
+        self.restoration_combo.addItems([
+            'none (disabled)',
+            'auto (detect from image)',
+            'denoise (for noisy images)',
+            'deblur (for blurred images)'
+        ])
+        self.restoration_combo.setToolTip(
+            "Cellpose3 restoration for degraded microscopy:\n"
+            "- none: Standard segmentation\n"
+            "- auto: Automatically detect and apply restoration\n"
+            "- denoise: Reduce noise before segmentation\n"
+            "- deblur: Sharpen blurred images\n"
+            "\nRequires Cellpose 3.0+"
+        )
+        restoration_layout.addWidget(self.restoration_combo)
+        
+        cellpose_layout.addLayout(restoration_layout)
         
         # Channels
         channels_layout = QHBoxLayout()
@@ -258,6 +309,19 @@ class SegmentationPanel(QWidget):
     def get_parameters(self) -> Dict:
         """Get current segmentation parameters"""
         if self.cellpose_radio.isChecked():
+            # Parse restoration mode
+            restoration_text = self.restoration_combo.currentText()
+            restoration_mode = restoration_text.split()[0]  # Extract 'none', 'auto', etc.
+            
+            # Parse 3D backend
+            backend_3d_text = self.backend_3d_combo.currentText()
+            if 'hybrid2d3d' in backend_3d_text:
+                use_3d_backend = 'hybrid2d3d'
+            elif 'true3d' in backend_3d_text:
+                use_3d_backend = 'true3d'
+            else:
+                use_3d_backend = 'default'
+            
             return {
                 'engine': 'cellpose',
                 'model_name': self.model_combo.currentText(),
@@ -266,6 +330,8 @@ class SegmentationPanel(QWidget):
                 'cellprob_threshold': self.cellprob_threshold_spin.value(),
                 'do_3d': self.do_3d_check.isChecked(),
                 'channels': [self.channel0_spin.value(), self.channel1_spin.value()],
+                'restoration_mode': restoration_mode,
+                'use_3d_backend': use_3d_backend,
             }
         else:
             sam_model = self.sam_model_combo.currentText().split()[0]  # Extract 'vit_h', etc.
@@ -293,6 +359,20 @@ class SegmentationPanel(QWidget):
             channels = params.get('channels', [0, 0])
             self.channel0_spin.setValue(channels[0])
             self.channel1_spin.setValue(channels[1])
+            
+            # Set restoration mode
+            restoration_mode = params.get('restoration_mode', 'none')
+            for i in range(self.restoration_combo.count()):
+                if restoration_mode in self.restoration_combo.itemText(i):
+                    self.restoration_combo.setCurrentIndex(i)
+                    break
+            
+            # Set 3D backend
+            use_3d_backend = params.get('use_3d_backend', 'default')
+            for i in range(self.backend_3d_combo.count()):
+                if use_3d_backend in self.backend_3d_combo.itemText(i):
+                    self.backend_3d_combo.setCurrentIndex(i)
+                    break
         else:
             self.sam_radio.setChecked(True)
             model_type = params.get('model_type', 'vit_h')
@@ -303,6 +383,15 @@ class SegmentationPanel(QWidget):
                     break
             
             self.sam_automatic_check.setChecked(params.get('automatic', True))
+    
+    def _on_3d_toggled(self, checked: bool):
+        """Handle 3D checkbox toggle - show/hide 3D backend selection"""
+        # Show/hide 3D backend selection
+        for i in range(self.backend_3d_layout.count()):
+            widget = self.backend_3d_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(checked)
+    
     
     def set_estimated_diameter(self, diameter: float):
         """Set the diameter from auto-detection"""
@@ -400,6 +489,15 @@ class SegmentationPanel(QWidget):
         """Clear segmentation history"""
         self.history_combo.clear()
         self.results_text.setText("History cleared")
+    
+    def clear(self):
+        """Clear the panel state"""
+        self.current_image = None
+        self.diameter_spin.setValue(30)
+        self.flow_threshold_spin.setValue(0.4)
+        self.cellprob_threshold_spin.setValue(0.0)
+        self.results_text.clear()
+        self.progress_bar.hide()
 
     def set_parameter_controls_enabled(self, enabled: bool, reason: str = ""):
         """Enable/disable manual parameter controls while keeping run controls available."""

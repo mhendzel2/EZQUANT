@@ -15,7 +15,7 @@ scikit-image>=0.22.0
 opencv-python>=4.8.0
 pillow>=10.0.0
 
-# Data Analysis
+# Data Analysis & Statistics
 numpy>=1.24.0
 pandas>=2.1.0
 scipy>=1.11.0
@@ -24,6 +24,7 @@ scikit-learn>=1.3.0
 # Visualization
 plotly>=5.17.0
 kaleido>=0.2.1
+matplotlib>=3.7.0
 
 # Export & Storage
 openpyxl>=3.1.0

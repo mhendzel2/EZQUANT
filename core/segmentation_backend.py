@@ -215,11 +215,67 @@ class MlSegmenterBackend:
              
         return mask.astype(np.uint8)
 
-def get_segmenter_backend(mode: Literal["classic", "ml", "auto"], **kwargs) -> SegmentationBackend:
+class Hybrid2D3DSegmenterBackend:
+    """
+    Backend using hybrid 2D segmentation + 3D linking.
+    
+    This backend combines robust 2D segmentation (e.g., Cellpose) with
+    3D instance linking via overlap-based graph matching.
+    """
+    def __init__(self, base_2d_backend=None):
+        self.base_2d_backend = base_2d_backend or ClassicSegmenterBackend()
+    
+    def segment(self,
+               volume: np.ndarray,
+               *,
+               structure_id: Optional[str] = None,
+               workflow_id: Optional[str] = None,
+               config: Optional[Dict[str, Any]] = None) -> np.ndarray:
+        """
+        Segment using hybrid 2D+3D approach.
+        
+        Args:
+            volume: 3D volume (Z, Y, X)
+            structure_id: Structure identifier
+            workflow_id: Workflow identifier
+            config: Configuration parameters
+            
+        Returns:
+            3D labeled mask with instance consistency
+        """
+        from core.segmentation_3d import Hybrid2D3DBackend
+        
+        # Create 2D segmentation function that wraps the base backend
+        def segment_2d_fn(slice_2d):
+            return self.base_2d_backend.segment(
+                slice_2d,
+                structure_id=structure_id,
+                workflow_id=workflow_id,
+                config=config
+            )
+        
+        # Get parameters from config
+        min_overlap = config.get('min_overlap_ratio', 0.3) if config else 0.3
+        max_distance_z = config.get('max_distance_z', 2) if config else 2
+        
+        # Create and run hybrid backend
+        hybrid = Hybrid2D3DBackend(
+            segmentation_2d_fn=segment_2d_fn,
+            min_overlap_ratio=min_overlap,
+            max_distance_z=max_distance_z
+        )
+        
+        masks = hybrid.segment(volume)
+        return masks.astype(np.uint8)
+
+
+def get_segmenter_backend(mode: Literal["classic", "ml", "auto", "hybrid2d3d"], **kwargs) -> SegmentationBackend:
     if mode == "ml":
         return MlSegmenterBackend()
     elif mode == "classic":
         return ClassicSegmenterBackend()
+    elif mode == "hybrid2d3d":
+        return Hybrid2D3DSegmenterBackend()
     elif mode == "auto":
         if supports_segmenter_ml():
             try:

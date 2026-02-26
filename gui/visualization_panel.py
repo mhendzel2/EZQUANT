@@ -669,3 +669,14 @@ class VisualizationPanel(QWidget):
         # Update plot
         html = self._add_plotly_callbacks(fig)
         self.plot_view.setHtml(html)
+
+    def clear(self):
+        """Clear the visualization panel"""
+        self.measurements_df = None
+        self.selected_nucleus_id = None
+        self.x_axis_combo.clear()
+        self.y_axis_combo.clear()
+        self.color_combo.clear()
+        self.color_combo.addItem("None")
+        self.stats_label.setText("")
+        self.plot_view.setHtml("")

@@ -364,3 +364,11 @@ class AnalysisPanel(QWidget):
         
         if value >= 100:
             self.progress_bar.setVisible(False)
+    
+    def clear_measurements(self):
+        """Clear all measurement data and reset the panel"""
+        self.measurements_df = None
+        self.results_table.setRowCount(0)
+        self.stats_text.clear()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
