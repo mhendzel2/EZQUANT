@@ -19,7 +19,7 @@ cd /d "%~dp0"
 
 echo.
 echo ========================================================================
-echo  Nuclei Segmentation App - Installation
+echo  EZQUANT - Installation
 echo ========================================================================
 echo.
 
@@ -209,14 +209,14 @@ echo [6/6] Installing application dependencies...
 echo This may take 10-15 minutes depending on your connection...
 echo.
 
-set REQUIREMENTS_FILE=requirements_updated.txt
+set REQUIREMENTS_FILE=requirements.txt
 if not exist "%REQUIREMENTS_FILE%" (
-    if exist "requirements.txt" (
-        echo WARNING: requirements_updated.txt not found. Using requirements.txt instead.
-        set REQUIREMENTS_FILE=requirements.txt
+    if exist "requirements_updated.txt" (
+        echo WARNING: requirements.txt not found. Using requirements_updated.txt instead.
+        set REQUIREMENTS_FILE=requirements_updated.txt
     ) else (
         echo ERROR: No requirements file found.
-        echo Expected requirements_updated.txt or requirements.txt in this folder.
+        echo Expected requirements.txt or requirements_updated.txt in this folder.
         echo.
         pause
         exit /b 1
@@ -224,7 +224,7 @@ if not exist "%REQUIREMENTS_FILE%" (
 )
 
 set TEMP_REQUIREMENTS=%TEMP%\ezquant_requirements_no_torch_%RANDOM%%RANDOM%.txt
-findstr /V /I /R /C:"^torch" /C:"^torchvision" "%REQUIREMENTS_FILE%" > "%TEMP_REQUIREMENTS%"
+findstr /V /I /R /C:"^torch" /C:"^torchvision" /C:"^torchaudio" "%REQUIREMENTS_FILE%" > "%TEMP_REQUIREMENTS%"
 if not exist "%TEMP_REQUIREMENTS%" (
     echo.
     echo ERROR: Failed to prepare requirements list for installation.

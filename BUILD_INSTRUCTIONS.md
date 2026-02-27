@@ -18,7 +18,7 @@ This guide explains how to build a standalone Windows executable and installer f
 
 4. **All application dependencies**
    ```bash
-   pip install -r requirements_updated.txt
+  pip install -r requirements.txt
    ```
 
 ### Optional (Recommended)
@@ -47,7 +47,7 @@ python -m venv venv_build
 
 # Install all dependencies
 pip install --upgrade pip setuptools wheel
-pip install -r requirements_updated.txt
+pip install -r requirements.txt
 pip install pyinstaller>=6.0
 ```
 
@@ -414,7 +414,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install -r requirements_updated.txt
+          pip install -r requirements.txt
           pip install pyinstaller
       
       - name: Build executable

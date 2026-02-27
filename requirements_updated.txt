@@ -1,6 +1,5 @@
 # GUI framework
-PySide6>=6.5.0
-PySide6-Addons>=6.5.0
+PySide6>=6.6.0
 pyqtgraph>=0.13.0
 
 # Segmentation models
@@ -8,13 +7,15 @@ cellpose>=4.0.0
 segment-anything>=1.0
 torch>=2.5.0
 torchvision>=0.20.0
+aicssegmentation>=0.5.2
+aicsmlsegment>=0.0.7
+segmenter_model_zoo
 
 # Image I/O
-tifffile>=2023.0.0
-imagecodecs>=2023.0.0
-aicsimageio>=4.14.0  # For VSI, LIF, CZI and other microscopy formats
-bioformats-jar  # Java library for bio-formats (optional, via aicsimageio)
-fsspec>=2023.1.0  # Required by aicsimageio
+tifffile>=2023.9.0
+imagecodecs>=2023.9.0
+aicsimageio>=4.14.0
+fsspec>=2023.1.0
 
 # Large file handling
 zarr>=2.16.0
@@ -23,27 +24,22 @@ numcodecs>=0.12.0
 dask[array]>=2024.1.0
 
 # Image processing and measurements
-scikit-image>=0.21.0
+scikit-image>=0.22.0
 opencv-python>=4.8.0
 scipy>=1.11.0
+scikit-learn>=1.3.0
 
 # Data handling
 numpy>=1.24.0
-pandas>=2.0.0
+pandas>=2.1.0
+pyyaml>=6.0
 
 # Visualization
 plotly>=5.17.0
+kaleido>=0.2.1
 matplotlib>=3.7.0
 
-# Machine learning (for GMM-based cell cycle analysis)
-scikit-learn>=1.3.0
-
-# Excel export support
+# Export and utilities
 openpyxl>=3.1.0
-
-# Other utilities
-Pillow>=10.0.0
-
-aicssegmentation>=0.5.2
-aicsmlsegment>=0.0.7
-segmenter_model_zoo
+pillow>=10.0.0
+bcrypt>=4.1.0
