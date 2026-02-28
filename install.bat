@@ -185,8 +185,8 @@ if errorlevel 1 (
 
     echo This may take several minutes...
     if "!USE_NIGHTLY!"=="1" (
-        echo Installing PyTorch Nightly with CUDA 12.4 for RTX 50-series (sm_120) support
-        %VENV_PIP% install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu124
+        echo Installing PyTorch Nightly with CUDA 12.8 for RTX 50-series (sm_120) support
+        %VENV_PIP% install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128
     ) else (
         echo Installing stable PyTorch with CUDA 12.4
         %VENV_PIP% install torch torchvision --index-url https://download.pytorch.org/whl/cu124
@@ -261,9 +261,9 @@ echo Optional - Download Cellpose models (recommended):
 echo   venv\Scripts\activate.bat
 echo   python -c "from cellpose import models; models.Cellpose(gpu=False, model_type='nuclei')"
 echo.
-echo For GPU acceleration, ensure NVIDIA CUDA Toolkit 12.4 is installed:
+echo For GPU acceleration, keep NVIDIA drivers up to date and install CUDA Toolkit when needed:
 echo   https://developer.nvidia.com/cuda-downloads
-echo   (CUDA 12.4 required for RTX 50-series and newer GPUs with sm_120)
+echo   (RTX 50-series uses PyTorch nightly CUDA 12.8 wheels in this installer)
 echo.
 echo ========================================================================
 echo.

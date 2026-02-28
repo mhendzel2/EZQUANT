@@ -264,8 +264,6 @@ class ImageViewer(QWidget):
         self.img_item.clear()
         self.mask_item.clear()
     
-    def _update_accessible_description(self):
-    
     def highlight_nucleus(self, nucleus_id: int):
         """Highlight a specific nucleus and zoom to it"""
         self.selected_nucleus_id = nucleus_id
